@@ -1,5 +1,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
+<meta name="app-build" content="2026-09-20-report-fix-v2">
 <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -3241,7 +3242,16 @@ function getYearlyAnalytics(insps, comps) {
 }
 
 // EXECUTIVE REPORT (rich analytics — replaces KPI dashboard)
+// REPORT FIX: defensive data normalization so empty/partial cloud data cannot crash the report.
+function safeText(v, fallback='—') {
+  const s = (v === null || v === undefined) ? '' : String(v);
+  return s.trim() || fallback;
+}
+function safeArray(v) { return Array.isArray(v) ? v : []; }
 function renderKPI() {
+  DATA.inspections = safeArray(DATA.inspections);
+  DATA.complaints = safeArray(DATA.complaints);
+  DATA.hotels = safeArray(DATA.hotels);
   const insps = DATA.inspections.filter(i => i.status === 'done');
   const comps = DATA.complaints;
   const bh = insps.filter(i=>i.hotelId==='baiyoke');
@@ -3298,11 +3308,22 @@ function renderKPI() {
         <div>
           <h1 class="display-font text-3xl font-bold" style="color:#1a1611">Executive <span class="gold-text" style="font-style:italic">Report</span></h1>
           <p class="text-sm" style="color:#5c5138">รายงานผู้บริหาร · Deep-dive Analytics + Individual KPI</p>
+          <div class="text-[10px] mt-1" style="color:#a89b7c">Build: 2026-09-20-report-fix-v2</div>
         </div>
       </div>
       <button data-action="printReport" class="btn-primary" style="padding:12px 24px">🖨️ พิมพ์ PDF · Print Report</button>
     </div>
     <div class="gold-line-short mt-4 mb-5 no-print"></div>
+    <div class="card p-3 mb-5 no-print" style="background:linear-gradient(135deg,#fefdfa,#faf5e8);border-color:#ecdcb7">
+      <div class="flex items-start gap-2">
+        <div class="text-lg">🔒</div>
+        <div class="text-xs" style="color:#5c5138;line-height:1.7">
+          <b style="color:#8b6820">Data Separation:</b>
+          ผล Load / Concurrency Test เป็นประวัติการทดสอบระบบเท่านั้น ไม่ถูกนับรวมใน KPI, Inspection หรือ Complaint จริง
+          · ลบข้อมูล LOADTEST จาก Supabase ได้โดยไม่ทำให้ประวัติสรุปด้านล่างหาย
+        </div>
+      </div>
+    </div>
 
     <!-- Executive Summary -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
