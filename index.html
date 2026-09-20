@@ -346,7 +346,9 @@ async function cloudLoadState() {
 }
 
 function cloudRowPayload(bucket, item) {
+  if (item === null || item === undefined) return item;
   let payload = JSON.parse(JSON.stringify(item));
+  if (!payload || typeof payload !== 'object') return payload;
   // Photos should be Supabase Storage URLs; never push large inline data URLs to the database.
   if (payload.items) {
     for (const v of Object.values(payload.items)) {
@@ -945,6 +947,11 @@ const ACTIONS = {
   },
   setStatus: (d) => {
     const insp = VIEW_STATE.inspection;
+    if (!insp) return;
+    if (!insp.items || typeof insp.items !== 'object' || Array.isArray(insp.items)) insp.items = {};
+    if (!insp.items[d.itemId] || typeof insp.items[d.itemId] !== 'object') {
+      insp.items[d.itemId] = { status: null, note: '', photos: [] };
+    }
     insp.items[d.itemId].status = d.status;
     autoSave();
     // === Surgical DOM update — ไม่ render หน้าใหม่ = ไม่เด้ง ===
@@ -1452,9 +1459,17 @@ function renderInspection() {
     }));
   }
   const insp = VIEW_STATE.inspection;
-  // Ensure items array structure has photos array (migrate old ones)
-  Object.values(insp.items).forEach(v => { if (!v.photos) v.photos = v.photo ? [v.photo] : []; if (v.photo !== undefined) delete v.photo; });
-  if (!insp.tables) insp.tables = [];
+  // Defensive migration: old/cloud inspections may contain items:null or malformed values.
+  // Always normalize the editable structure before any click/input handler touches it.
+  if (!insp.items || typeof insp.items !== 'object' || Array.isArray(insp.items)) insp.items = {};
+  if (!Array.isArray(insp.tables)) insp.tables = [];
+  if (!insp.activeTab || !checklists.some(c => c.id === insp.activeTab)) insp.activeTab = checklists[0]?.id || null;
+  checklists.forEach(cl => (Array.isArray(cl.items) ? cl.items : []).forEach(it => {
+    if (!insp.items[it.id] || typeof insp.items[it.id] !== 'object') insp.items[it.id] = { status: null, note: '', photos: [] };
+    const v = insp.items[it.id];
+    if (!Array.isArray(v.photos)) v.photos = v.photo ? [v.photo] : [];
+    if (v.photo !== undefined) delete v.photo;
+  }));
   const activeCl = checklists.find(c => c.id === insp.activeTab) || checklists[0];
   const totals = calcInspectionProgress(insp);
   const isEditingSaved = insp.status === 'done';
@@ -3314,32 +3329,12 @@ function renderKPI() {
       <button data-action="printReport" class="btn-primary" style="padding:12px 24px">🖨️ พิมพ์ PDF · Print Report</button>
     </div>
     <div class="gold-line-short mt-4 mb-5 no-print"></div>
-    <div class="card p-3 mb-5 no-print" style="background:linear-gradient(135deg,#fefdfa,#faf5e8);border-color:#ecdcb7">
-      <div class="flex items-start gap-2">
-        <div class="text-lg">🔒</div>
-        <div class="text-xs" style="color:#5c5138;line-height:1.7">
-          <b style="color:#8b6820">Data Separation:</b>
-          ผล Load / Concurrency Test เป็นประวัติการทดสอบระบบเท่านั้น ไม่ถูกนับรวมใน KPI, Inspection หรือ Complaint จริง
-          · ลบข้อมูล LOADTEST จาก Supabase ได้โดยไม่ทำให้ประวัติสรุปด้านล่างหาย
-        </div>
-      </div>
-    </div>
-
     <!-- Executive Summary -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
       <div class="card p-4"><div class="text-xs font-semibold" style="color:#5c5138;letter-spacing:0.05em">📝 ตรวจทั้งหมด · Total</div><div class="text-3xl font-bold mt-1" style="color:#1a1611">${insps.length}</div></div>
       <div class="card p-4" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7)"><div class="text-xs font-semibold" style="color:#166534;letter-spacing:0.05em">✅ Exec Match Rate</div><div class="text-3xl font-bold mt-1" style="color:#166534">${avgMatchRate}%</div></div>
       <div class="card p-4" style="background:linear-gradient(135deg,#fef2f2,#fee2e2)"><div class="text-xs font-semibold" style="color:#a52d33;letter-spacing:0.05em">📢 คอมเพลนต์ · Complaints</div><div class="text-3xl font-bold mt-1" style="color:#a52d33">${comps.length}</div></div>
       <div class="card p-4" style="background:linear-gradient(135deg,#faf5e8,#f2e6c8)"><div class="text-xs font-semibold" style="color:#8b6820;letter-spacing:0.05em">🔧 อัตราแก้ปัญหา · Resolved</div><div class="text-3xl font-bold mt-1" style="color:#8b6820">${resolvedRate}%</div></div>
-    </div>
-
-    <!-- System Test History -->
-    <div class="card p-5 mb-4 print-no-break" style="background:linear-gradient(135deg,#fefdfa,#f7f4ec);border-color:#ecdcb7">
-      <div class="flex items-center justify-between gap-3 flex-wrap mb-3">
-        <div><div class="font-semibold" style="color:#1a1611">🧪 ประวัติการทดสอบระบบ · System Test History</div><div class="text-xs" style="color:#5c5138">เก็บผล Load / Concurrency Test ไว้เป็นหลักฐานแยกจาก KPI F&B</div></div>
-        <button data-action="nav" data-page="testHistory" class="btn-secondary no-print" style="padding:7px 12px;font-size:11px">ดูทั้งหมด · View All</button>
-      </div>
-      <div class="space-y-2">${SYSTEM_TEST_HISTORY.map(x=>`<div class="flex items-center gap-2 py-2" style="border-top:1px solid #ecdcb7"><span class="badge ${x.statusClass==='pass'?'badge-mint':'badge-amber'}">${x.status}</span><div class="flex-1 min-w-0 text-xs" style="color:#1a1611"><b>${x.name}</b> · ${x.success} · DB ${x.db}</div><div class="text-xs" style="color:#8b6820">${x.time}</div></div>`).join('')}</div>
     </div>
 
     <!-- Daily KPI Highlight -->
