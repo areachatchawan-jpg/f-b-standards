@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Baiyoke F&B · 100 User Load Test</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+body{font-family:Arial,sans-serif;background:#faf7ef;color:#211b12;margin:0}
+.wrap{max-width:900px;margin:auto;padding:24px}
+.card{background:#fff;border:1px solid #eadfca;border-radius:18px;padding:20px;margin-bottom:16px;box-shadow:0 5px 18px #0000000a}
+h1{margin:0 0 6px}.muted{color:#6e634f}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.kpi{background:#faf7ef;border-radius:12px;padding:14px;text-align:center}.kpi b{display:block;font-size:26px}
+button{border:0;border-radius:12px;padding:13px 18px;font-weight:700;cursor:pointer;margin:4px}
+.primary{background:#a77b25;color:#fff}.secondary{background:#eee7d7}.danger{background:#b42318;color:#fff}
+.progress{height:12px;background:#eee7d7;border-radius:99px;overflow:hidden}.bar{height:100%;width:0;background:#2e9b57}
+pre{white-space:pre-wrap;background:#17130e;color:#eee;padding:14px;border-radius:12px;max-height:300px;overflow:auto}
+@media(max-width:650px){.wrap{padding:14px}.grid{grid-template-columns:repeat(2,1fr)}button{width:100%;margin:4px 0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>🚀 F&B Standards — 100 User Load Test</h1>
+    <div class="muted">ทดสอบการบันทึกลง Supabase พร้อมกัน 100 รายการ โดยใช้โครงสร้างเดียวกับระบบจริง</div>
+    <p><b>ปลอดภัย:</b> รายการทดสอบใช้ prefix <code>LOADTEST_</code> และลบได้หลังทดสอบ</p>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div class="kpi"><span>เป้าหมาย</span><b>100</b><small>records</small></div>
+      <div class="kpi"><span>สำเร็จ</span><b id="ok">0</b><small>upserts</small></div>
+      <div class="kpi"><span>ผิดพลาด</span><b id="bad">0</b><small>errors</small></div>
+      <div class="kpi"><span>เวลา</span><b id="ms">-</b><small>ms</small></div>
+    </div>
+    <div style="margin:16px 0" class="progress"><div id="bar" class="bar"></div></div>
+    <button class="primary" id="run">🚀 เริ่มทดสอบ 100 คนพร้อมกัน</button>
+    <button class="secondary" id="verify">🔎 ตรวจสอบว่าครบ 100 หรือไม่</button>
+    <button class="danger" id="cleanup">🧹 ลบข้อมูลทดสอบ</button>
+  </div>
+
+  <div class="card">
+    <h3>🔐 Authentication Test</h3>
+    <div class="muted">ทดสอบ Anonymous Sign-In 100 ครั้งแยกต่างหากได้ แต่ Supabase อาจจำกัด rate limit จาก IP เดียว</div>
+    <button class="secondary" id="auth">ทดสอบ Anonymous 100 Sessions</button>
+    <div id="authResult"></div>
+  </div>
+
+  <div class="card">
+    <h3>ผลการทดสอบ</h3>
+    <pre id="log">พร้อมทดสอบ...</pre>
+  </div>
+</div>
+
+<script>
+const URL='https://gufnisizabudxeqqviet.supabase.co';
+const KEY='sb_publishable_xw4diCn3g-WNMvJJXz_22A_Y6wk9a4W';
+const TABLE='fnb_cloud';
+const PREFIX='LOADTEST_';
+let sb=null, lastIds=[];
+
+function log(x){document.getElementById('log').textContent += '\\n'+x}
+function resetLog(){document.getElementById('log').textContent=''}
+function set(id,v){document.getElementById(id).textContent=v}
+function pct(v){document.getElementById('bar').style.width=v+'%'}
+async function ensureAuth(){
+  if(sb) return sb;
+  sb=window.supabase.createClient(URL,KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
+  const s=await sb.auth.getSession();
+  if(!s.data.session){
+    const a=await sb.auth.signInAnonymously();
+    if(a.error) throw a.error;
+  }
+  return sb;
+}
+function payload(i){
+  return {
+    bucket:'inspections',
+    item_id:PREFIX+Date.now()+'_'+String(i).padStart(3,'0'),
+    payload:{
+      id:'loadtest-'+Date.now()+'-'+i,
+      status:'done',
+      score:100,
+      date:new Date().toISOString().slice(0,10),
+      time:new Date().toTimeString().slice(0,8),
+      inspectorId:'load-test',
+      inspectorName:'LOAD TEST USER '+(i+1),
+      hotelId:'baiyoke',
+      outletId:'bsr76',
+      type:'main',
+      testRun:true,
+      userNumber:i+1
+    },
+    updated_at:new Date().toISOString()
+  };
+}
+
+document.getElementById('run').onclick=async()=>{
+  resetLog(); set('ok',0);set('bad',0);set('ms','-');pct(0);lastIds=[];
+  const t0=performance.now();
+  try{
+    await ensureAuth();
+    log('✓ Supabase Auth พร้อม');
+    const rows=Array.from({length:100},(_,i)=>payload(i));
+    lastIds=rows.map(r=>r.item_id);
+    let ok=0,bad=0,done=0;
+    const jobs=rows.map(async row=>{
+      try{
+        const {error}=await sb.from(TABLE).upsert(row,{onConflict:'bucket,item_id'});
+        if(error) throw error;
+        ok++;
+      }catch(e){bad++;log('✕ '+row.item_id+': '+(e.message||e))}
+      done++;set('ok',ok);set('bad',bad);pct(done);
+    });
+    await Promise.all(jobs);
+    const ms=Math.round(performance.now()-t0);set('ms',ms);
+    log(`✓ จบ: สำเร็จ ${ok}/100 · ผิดพลาด ${bad} · ${ms} ms`);
+    if(ok===100) log('🎉 DATABASE CONCURRENCY TEST: PASS');
+    else log('⚠️ ยังไม่ครบ 100 — กดตรวจสอบซ้ำ');
+  }catch(e){log('✕ เริ่มทดสอบไม่ได้: '+(e.message||e))}
+};
+
+document.getElementById('verify').onclick=async()=>{
+  try{
+    await ensureAuth();
+    const {data,error}=await sb.from(TABLE).select('item_id,updated_at').like('item_id',PREFIX+'%');
+    if(error) throw error;
+    const n=data?.length||0;
+    log(`🔎 ตรวจใน fnb_cloud: พบ LOADTEST ทั้งหมด ${n} รายการ`);
+    log(n>=100?'✅ VERIFY: พบอย่างน้อย 100 รายการ':'⚠️ VERIFY: ยังน้อยกว่า 100 รายการ');
+  }catch(e){log('✕ Verify: '+(e.message||e))}
+};
+
+document.getElementById('cleanup').onclick=async()=>{
+  if(!confirm('ลบข้อมูล LOADTEST ทั้งหมดใช่ไหม?')) return;
+  try{
+    await ensureAuth();
+    const {data,error}=await sb.from(TABLE).select('item_id').like('item_id',PREFIX+'%');
+    if(error) throw error;
+    const ids=(data||[]).map(x=>x.item_id);
+    let removed=0;
+    for(let i=0;i<ids.length;i+=100){
+      const chunk=ids.slice(i,i+100);
+      const r=await sb.from(TABLE).delete().eq('bucket','inspections').in('item_id',chunk);
+      if(r.error) throw r.error;
+      removed+=chunk.length;
+    }
+    log(`🧹 ลบข้อมูลทดสอบแล้ว ${removed} รายการ`);
+  }catch(e){log('✕ Cleanup: '+(e.message||e))}
+};
+
+document.getElementById('auth').onclick=async()=>{
+  const box=document.getElementById('authResult'); box.textContent='กำลังทดสอบ...';
+  let ok=0,bad=0,firstErr='';
+  const jobs=Array.from({length:100},async()=>{
+    const c=window.supabase.createClient(URL,KEY,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
+    const r=await c.auth.signInAnonymously();
+    if(r.error){bad++;firstErr=firstErr||r.error.message}else ok++;
+    try{await c.auth.signOut()}catch(_){}
+  });
+  await Promise.all(jobs);
+  box.innerHTML=`<p><b>Auth 100 sessions:</b> สำเร็จ ${ok} · ล้มเหลว ${bad}</p><p>${firstErr?'สาเหตุแรก: '+firstErr:'ไม่พบ error'}</p>`;
+  log(`🔐 Auth test: ${ok} success / ${bad} failed`);
+};
+</script>
+</body>
+</html>
