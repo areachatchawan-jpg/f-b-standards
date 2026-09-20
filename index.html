@@ -256,7 +256,21 @@ function cloudConfigPayload() {
   };
 }
 function jsonStable(v) {
-  try { return JSON.stringify(v); } catch (_) { return ''; }
+  // Canonical JSON comparison: Supabase/Postgres JSONB may return object keys
+  // in a different order from the object sent by the browser. Comparing raw
+  // JSON.stringify() output therefore creates a false "read-back mismatch"
+  // even when the actual data is identical. Sort object keys recursively while
+  // preserving array order.
+  const canonicalize = value => {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const key of Object.keys(value).sort()) out[key] = canonicalize(value[key]);
+      return out;
+    }
+    return value;
+  };
+  try { return JSON.stringify(canonicalize(v)); } catch (_) { return ''; }
 }
 async function initCloud() {
   if (!cloudConfigured()) {
