@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
-<meta name="app-build" content="2026-09-20-mobile-concurrency-fix">
+<meta name="app-build" content="2026-09-20-mobile-scroll-dirty-fix">
 <meta name="theme-color" content="#b8892f">
 <meta name="format-detection" content="telephone=no">
 <meta name="mobile-web-app-capable" content="yes">
@@ -261,6 +261,53 @@
     background: linear-gradient(135deg, #fdfbf5, #faf5e8);
   }
   .print-signature { border-top: 1px solid #8b6820; margin-top: 40px; padding-top: 8px; text-align: center; font-size: 11px; color: #5c5138; }
+
+  /* ============================================================
+     ANTI-BOUNCE FIXES (build 2026-09-20-antibounce)
+     ============================================================ */
+  /* (1) fade-in ใช้ opacity อย่างเดียว
+         เดิมมี translateY(10px) → parent ที่มี transform ทำให้ .bottom-bar (position:fixed)
+         หลุดไปอยู่ท้ายหน้าระหว่างเล่น animation แล้ว "ดีด" กลับมาติดขอบจอ ทุกครั้งที่ render */
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  .fade-in { animation: fade 0.22s ease-out; }
+  /* (2) re-render ที่ไม่ได้เปลี่ยนหน้า (กดปุ่ม / sync cloud / อัปโหลดรูป) ห้ามเล่น animation ซ้ำ */
+  #app.no-anim .fade-in { animation: none !important; }
+  /* (3) iOS: :hover ค้างหลังแตะ → การ์ดลอยขึ้น 4px แล้วค้าง — ให้ hover ทำงานเฉพาะเครื่องที่มีเมาส์ */
+  @media (hover: none) {
+    .card-hover:hover { transform: none; }
+    .btn-primary:hover { transform: none; }
+  }
+  /* Restaurant list: keep card geometry stable on touch devices. */
+  .outlets-page .card-hover { transform: none; transition: box-shadow .2s ease, border-color .2s ease; }
+  @media (hover: hover) { .outlets-page .card-hover:hover { transform: translateY(-4px); } }
+  /* (4) การ์ดใบใหญ่ ไม่ต้องหดแรง 4% ตอนกด (ดูเหมือนเด้ง) */
+  .card[data-action]:active, .card-hover[data-action]:active { transform: scale(0.985) !important; }
+  /* (5) ใช้ svh (ความสูงจอแบบเล็กสุด) แทน vh — แถบ Safari ยุบ/ขยายแล้วหน้าไม่ขยับ */
+  @supports (height: 100svh) {
+    body, #app, .login-page { min-height: 100svh; }
+  }
+  html { overscroll-behavior-y: none; -webkit-text-size-adjust: 100%; }
+  /* toast ลอยทับเนื้อหาตอนเข้าสู่ระบบ ~2.5 วิ แล้วบังการแตะการ์ดโรงแรมที่อยู่ข้างใต้ — ให้แตะทะลุได้ */
+  .toast { pointer-events: none; }
+  @media (max-width: 767px) {
+    /* (6) backdrop-filter บน sticky/fixed ทำให้ iOS Safari กระตุกตอนเลื่อน — พื้นหลังเกือบทึบอยู่แล้ว ตัดออกได้ */
+    .app-header, .bottom-bar, .luxe-card, .luxe-badge, .luxe-logo-card {
+      -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+    .app-header { background: #fefdfb; }
+    .bottom-bar { background: #ffffff; }
+  }
+  @media (max-width: 520px) {
+    /* (7) header เตี้ยลง: เดิมไอคอนตกเป็น 2 แถว กินที่ ~100px ของจอ */
+    .app-header { padding-top: 6px !important; padding-bottom: 6px !important; margin-bottom: 12px !important; }
+    .app-header .max-w-6xl { gap: 4px; }
+    .app-header .max-w-6xl > div:first-child > div:last-child { display: none; }
+    .app-header .w-11 { width: 38px; height: 38px; font-size: 17px !important; }
+    .app-header .nav-btn { min-width: 38px !important; min-height: 40px !important; padding: 0 6px !important; }
+    .app-header .flex.items-center.gap-1 { gap: 2px; }
+  }
+  @media (max-width: 380px) {
+    .app-header .nav-btn { min-width: 34px !important; padding: 0 4px !important; }
+  }
 </style>
 
 </head>
@@ -566,7 +613,7 @@ async function cloudAfterLoad() {
   // ดันขึ้น cloud เฉพาะตอนฐานข้อมูลยังว่าง (ครั้งแรกสุด) หรือมีของในเครื่องที่ใหม่กว่า
   await cloudSyncNow(FNB_FRESH_DB);
   saveDataLocalOnly();
-  render();
+  softRender();
 }
 
 // เก็บชื่อเดิมไว้ เผื่อมีที่อื่นเรียก
@@ -760,13 +807,16 @@ function scheduleCloudSync() {
 // เด้งหน้าจอใหม่แบบรวบรอบ และไม่วาดทับตอนผู้ใช้กำลังพิมพ์
 let FNB_RENDER_TIMER = null;
 function requestRealtimeRender() {
+  // Do not replace #app while the restaurant list is open. Background Cloud
+  // events must not interrupt native iOS scroll momentum or jump the list.
+  if (VIEW_STATE.page === 'outlets') return;
   clearTimeout(FNB_RENDER_TIMER);
   FNB_RENDER_TIMER = setTimeout(() => {
     const ae = document.activeElement;
     const typing = ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName);
     const inspecting = VIEW_STATE.page === 'inspection' && VIEW_STATE.inspection?.status !== 'done';
     if (typing || inspecting) { FNB_RENDER_TIMER = setTimeout(requestRealtimeRender, 2500); return; }
-    render();
+    softRender();
   }, 900);
 }
 let FNB_LOCAL_SAVE_TIMER = null;
@@ -1001,7 +1051,7 @@ async function flushPhotoQueue() {
   }
   if (sent) {
     saveData();
-    render();
+    softRender();
     toast(`📤 ส่งรูปที่ค้างขึ้น Cloud แล้ว ${sent} รูป`, 'success');
   }
 }
@@ -1195,8 +1245,8 @@ const DEFAULT_DATA = {
   hotels: [
     { id: 'baiyoke', name: 'Baiyoke Sky Hotel', theme: 'baiyoke', logo: 'images/baiyoke.jpg', emoji: '🏆',
       outlets: [
-        { id: 'bsr76', name: 'Bangkok Sky Restaurant', floor: 'ชั้น 76' },
-        { id: 'bsr78', name: 'Bangkok Sky Restaurant', floor: 'ชั้น 78' },
+        { id: 'bsr76', name: 'Bangkok Sky Restaurant · 76F', floor: 'ชั้น 76' },
+        { id: 'bsr78', name: 'Bangkok Sky Restaurant · 78F', floor: 'ชั้น 78' },
         { id: 'stella', name: 'Stella Palace', floor: 'ชั้น 79' },
         { id: 'balcony', name: 'Bangkok Balcony', floor: 'ชั้น 81' },
         { id: 'crystal', name: 'Crystal Grill', floor: 'ชั้น 82' },
@@ -1223,7 +1273,7 @@ function isLoadTestInspection(item) {
 
 let DATA = loadData();
 let SESSION = { user: null };
-let VIEW_STATE = { page: 'login', hotelId: null, outletId: null, inspection: null, historyId: null, adminTab: 'users', inspectionType: 'standards', complaintForm: null, historyFilter: 'all', kpiHotel: 'baiyoke' };
+let VIEW_STATE = { page: 'login', hotelId: null, outletId: null, inspection: null, historyId: null, adminTab: 'users', inspectionType: 'standards', complaintForm: null, historyFilter: 'all', kpiHotel: 'baiyoke', inspectionDirty: false };
 
 function loadData() {
   try {
@@ -1305,10 +1355,26 @@ function toast(msg, kind='success') {
   setTimeout(() => el.remove(), 2500);
 }
 
+// จำตำแหน่งเลื่อนของหน้าที่ออกมา เพื่อคืนให้ตอนกดย้อนกลับ (เช่น ยกเลิกการตรวจ → กลับรายการห้องอาหารที่เลื่อนค้างไว้)
+let NAV_STACK = [];
+let _restoreScrollY = null;
+let _lastRenderedPage = null;
 function nav(page, extra={}) {
   const isPageChange = VIEW_STATE.page !== page;
+  _restoreScrollY = null;
+  if (isPageChange) {
+    if (page === 'login') NAV_STACK = [];
+    else {
+      const top = NAV_STACK[NAV_STACK.length - 1];
+      if (top && top.page === page) { NAV_STACK.pop(); _restoreScrollY = top.y; }   // ย้อนกลับ → คืนตำแหน่งเดิม
+      else if (VIEW_STATE.page && VIEW_STATE.page !== 'login') {
+        NAV_STACK.push({ page: VIEW_STATE.page, y: window.scrollY });                // ไปหน้าใหม่ → จำของหน้านี้ไว้
+        if (NAV_STACK.length > 20) NAV_STACK.shift();
+      }
+    }
+  }
   VIEW_STATE = { ...VIEW_STATE, page, ...extra };
-  _forceScrollTop = isPageChange;
+  _forceScrollTop = isPageChange && _restoreScrollY === null;
   render();
 }
 let _forceScrollTop = true;
@@ -1321,10 +1387,33 @@ function canSeeExecReview() { return isExec(); }
 function canSeeAllInspections() { return isExec(); }
 function canDoAdmin() { return isAdmin(); }
 
+// ===== render จากงานเบื้องหลัง (cloud sync / อัปโหลดรูป) =====
+// ห้ามวาดหน้าทับตอนผู้ใช้กำลังเลื่อน/แตะ/พิมพ์ — iOS จะตัด momentum แล้วหน้ากระตุก/เด้ง
+let _lastScrollAt = 0, _touchActive = false, _softRenderTimer = null;
+window.addEventListener('scroll', () => { _lastScrollAt = Date.now(); }, { passive: true });
+document.addEventListener('touchstart', () => { _touchActive = true; }, { passive: true });
+document.addEventListener('touchend', () => { _touchActive = false; }, { passive: true });
+document.addEventListener('touchcancel', () => { _touchActive = false; }, { passive: true });
+function softRender() {
+  const ae = document.activeElement;
+  const typing = ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName);
+  if (typing || _touchActive || Date.now() - _lastScrollAt < 700) {
+    clearTimeout(_softRenderTimer);
+    _softRenderTimer = setTimeout(softRender, 1000);
+    return;
+  }
+  render();
+}
+
 function render() {
   try {
     const app = document.getElementById('app');
     if (!SESSION.user && VIEW_STATE.page !== 'login') VIEW_STATE.page = 'login';
+    // เล่น fade-in เฉพาะตอนเปลี่ยนหน้า — re-render เฉยๆ (กดปุ่ม/ sync cloud) ต้องไม่กะพริบ
+    const pageChanged = _forceScrollTop || _lastRenderedPage !== VIEW_STATE.page;
+    app.classList.toggle('no-anim', !pageChanged);
+    // ล็อกความสูงไว้ชั่วขณะตอนสลับ innerHTML ไม่งั้นเอกสารหดเป็น 0 แล้ว iOS ดีดตำแหน่งเลื่อน
+    if (!pageChanged) app.style.minHeight = app.offsetHeight + 'px';
     // Preserve scroll + focus across re-renders (kills "หน้าเด้ง" bug)
     const scrollY = window.scrollY;
     // Preserve horizontal scroll positions of all scrollable tab bars
@@ -1350,9 +1439,12 @@ function render() {
     if (VIEW_STATE.page === 'kpi') setTimeout(drawKPI, 50);
     // Restore scroll and focus
     if (_forceScrollTop) { window.scrollTo(0, 0); _forceScrollTop = false; }
+    else if (_restoreScrollY !== null) { window.scrollTo(0, _restoreScrollY); _restoreScrollY = null; }
     else window.scrollTo(0, scrollY);
+    _lastRenderedPage = VIEW_STATE.page;
     // Restore horizontal scroll positions on tab bars
     requestAnimationFrame(() => {
+      app.style.minHeight = '';
       document.querySelectorAll('.scroll-hide').forEach(el => {
         const key = (el.getAttribute('data-scroll-key')) ||
                     (VIEW_STATE.page + '|' + (el.firstElementChild?.textContent?.slice(0,40) || '') + '|' + el.children.length);
@@ -1386,6 +1478,7 @@ function render() {
     paintConnChip();
   } catch(e) {
     console.error(e);
+    try { document.getElementById('app').style.minHeight = ''; } catch(_) {}
     document.getElementById('app').innerHTML = `<div style="padding:40px;background:#faf5e8;color:#1a1611;min-height:100vh"><h2 style="color:#dc2626">เกิดข้อผิดพลาด</h2><pre style="background:#fee2e2;padding:16px;border-radius:12px;overflow:auto;font-size:12px">${(e.stack||e.message).replace(/</g,'&lt;')}</pre></div>`;
   }
 }
@@ -1417,15 +1510,25 @@ function handleAction(e) {
     if (typeof toast === 'function') toast('ผิดพลาด: '+err.message, 'error');
   }
 }
-document.addEventListener('click', handleAction, false);
+// กัน "แตะครั้งเดียว ทำงานซ้ำ" (ghost click):
+// เดิมแตะ 1 ครั้งยิงได้ทั้ง pointerup + touchend + click พอ action สั่ง render() DOM ถูกสร้างใหม่
+// ตัวกันซ้ำรายองค์ประกอบ (el._acted) จึงใช้ไม่ได้ → click ที่ตามมาตกไปโดนปุ่มใหม่ใต้นิ้ว
+// (เช่น เปิดหน้าตรวจแล้วโดนปุ่มอื่นทันที / เปิด modal แล้ว backdrop ปิดตัวเอง) = อาการหน้าเด้ง
+// แก้: จอสัมผัสให้ pointerup จัดการ แล้วเมิน touchend/click ที่ตามหลังภายใน 800ms
+let _lastTouchActAt = 0;
+document.addEventListener('click', function(e) {
+  if (Date.now() - _lastTouchActAt < 800) return;
+  handleAction(e);
+}, false);
 document.addEventListener('touchend', function(e) {
+  if (Date.now() - _lastTouchActAt < 800) return;   // pointerup จัดการไปแล้ว
   const el = e.target.closest('[data-action]');
-  if (el && el.dataset.action && el.dataset.action !== 'noop') handleAction(e);
+  if (el && el.dataset.action && el.dataset.action !== 'noop') { _lastTouchActAt = Date.now(); handleAction(e); }
 }, {passive: true});
 document.addEventListener('pointerup', function(e) {
   if (e.pointerType === 'mouse') return;
   const el = e.target.closest('[data-action]');
-  if (el && el.dataset.action && el.dataset.action !== 'noop') handleAction(e);
+  if (el && el.dataset.action && el.dataset.action !== 'noop') { _lastTouchActAt = Date.now(); handleAction(e); }
 }, {passive: true});
 document.addEventListener('submit', function(e) {
   if (e.target.id === 'login-form') { e.preventDefault(); doLogin(); }
@@ -1517,6 +1620,7 @@ document.addEventListener('input', function(e) {
 function autoSave() {
   const insp = VIEW_STATE.inspection;
   if (!insp) return;
+  if (insp.status !== 'done') VIEW_STATE.inspectionDirty = true;
   insp.updatedAt = Date.now();
   const idx = DATA.inspections.findIndex(x => x.id === insp.id);
   if (idx >= 0) DATA.inspections[idx] = insp; else DATA.inspections.push(insp);
@@ -1534,20 +1638,30 @@ const ACTIONS = {
   closeModal: () => closeModal(),
   pickInspectionType: (d) => {
     VIEW_STATE.inspection = null;
+    VIEW_STATE.inspectionDirty = false;
     nav('inspection', { hotelId: d.hotelId, outletId: d.outletId, inspectionType: 'main' });
   },
   startInspection: (d) => {
     VIEW_STATE.inspection = null;
+    VIEW_STATE.inspectionDirty = false;
     closeModal();
     nav('inspection', { hotelId: d.hotelId, outletId: d.outletId, inspectionType: 'main' });
   },
   cancelInspection: () => {
     const insp = VIEW_STATE.inspection;
     const isEditing = insp?.status === 'done';
+    const isDirty = VIEW_STATE.inspectionDirty === true;
     if (isEditing) {
-      // Just navigate back — no data lost since edits saved automatically
       VIEW_STATE.inspection = null;
+      VIEW_STATE.inspectionDirty = false;
       nav('history');
+      return;
+    }
+    if (!isDirty) {
+      if (insp) DATA.inspections = DATA.inspections.filter(x => x.id !== insp.id);
+      VIEW_STATE.inspection = null;
+      VIEW_STATE.inspectionDirty = false;
+      nav('outlets', { hotelId: VIEW_STATE.hotelId });
       return;
     }
     showConfirmModal('ยกเลิกการตรวจ?', 'ข้อมูลที่กรอกไว้จะถูกลบทิ้ง · Data will be lost', () => {
@@ -1555,6 +1669,7 @@ const ACTIONS = {
       saveData();
       const hid = VIEW_STATE.hotelId;
       VIEW_STATE.inspection = null;
+      VIEW_STATE.inspectionDirty = false;
       nav('outlets', { hotelId: hid });
     });
   },
@@ -1595,7 +1710,7 @@ const ACTIONS = {
     render();
   },
   switchTab: (d) => { VIEW_STATE.inspection.activeTab = d.tab; render(); },
-  saveDraft: () => { autoSave(); toast('บันทึกร่างเรียบร้อย'); },
+  saveDraft: () => { autoSave(); VIEW_STATE.inspectionDirty = false; toast('บันทึกร่างเรียบร้อย'); },
   finishInspection: () => finishInspection(),
   selectShift: (d) => {
     const sh = (DATA.shifts||DEFAULT_SHIFTS).find(x => x.id === d.shiftId);
@@ -1648,6 +1763,7 @@ const ACTIONS = {
     }
     // Restore inspection to editable state
     VIEW_STATE.inspection = JSON.parse(JSON.stringify(insp));
+    VIEW_STATE.inspectionDirty = false;
     VIEW_STATE.hotelId = insp.hotelId;
     VIEW_STATE.outletId = insp.outletId;
     VIEW_STATE.inspectionType = insp.type || 'main';
@@ -2010,7 +2126,7 @@ function renderOutlets() {
   const gradient = h.theme === 'baiyoke' ? 'bg-baiyoke' : 'bg-queensland';
   return `
   ${topbar()}
-  <div class="max-w-6xl mx-auto px-4 pb-16 fade-in">
+  <div class="max-w-6xl mx-auto px-4 pb-16 fade-in outlets-page">
     <button data-action="nav" data-page="home" class="btn-secondary mb-4">← กลับ · Back</button>
     <div class="${gradient} rounded-3xl p-6 mb-6" style="box-shadow:0 20px 40px rgba(0,0,0,0.15)">
       <div class="flex items-center gap-4">
@@ -2659,6 +2775,7 @@ function finishInspection() {
   }
   saveData();
   const done = insp.id;
+  VIEW_STATE.inspectionDirty = false;
   VIEW_STATE.inspection = null;
   toast(wasEditingDone ? `อัปเดตแล้ว · Updated ${insp.score}% ✏️` : `บันทึกเรียบร้อย! คะแนน ${insp.score}% 🎉`);
   nav('summary', { historyId: done });
@@ -4988,7 +5105,8 @@ function showConfirmModal(title, msg, onConfirm) {
     </div>
   </div>`);
   const btn = document.getElementById('confirm-btn');
-  if (btn) btn.onclick = () => { closeModal(); onConfirm(); };
+  // กัน ghost click: modal เพิ่งเปิดจากการแตะ ห้ามให้ click ที่ตามมาไปกดยืนยันเอง
+  if (btn) btn.onclick = () => { if (Date.now() - _lastTouchActAt < 400) return; closeModal(); onConfirm(); };
 }
 
 function addOutletCategory(outletId) {
