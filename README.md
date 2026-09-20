@@ -1,40 +1,29 @@
-# F&B Standards · ระบบตรวจมาตรฐานห้องอาหาร
+# F&B Standards · Multi-user Cloud Version
 
-ระบบประเมินคุณภาพและตรวจสอบมาตรฐานห้องอาหารบุฟเฟต์
-สำหรับ **Baiyoke Sky Hotel** และ **Queensland Hotel Bangkok**
+This build keeps the existing UI and adds:
 
-## 🌐 เปิดใช้งาน
+- Supabase Postgres shared data for inspections and complaints
+- Realtime updates across browsers
+- Supabase Storage for inspection evidence photos
+- Anonymous Supabase Auth for authenticated database access
+- LocalStorage remains as offline/cache fallback
 
-เปิดที่: `https://[your-username].github.io/[repo-name]/`
+## One-time setup
 
-## 👤 บัญชีทดสอบ (รหัสผ่าน `1234` ทั้งหมด)
+1. Run `fnb-supabase-setup.sql` in the Supabase SQL Editor.
+2. In Supabase Dashboard → Authentication → Sign In / Providers, enable **Anonymous Sign-Ins**.
+3. Get the project's **publishable key** (older projects may call it `anon` key).
+4. Open `index.html` and replace:
 
-- `admin` — ผู้ดูแลระบบ
-- `exec` — ฝ่ายบริหาร (ตรวจซ้ำ + KPI report)
-- `manager` — ผู้จัดการ
-- `inspector` — ผู้ตรวจ
+```js
+key: 'PASTE_YOUR_SUPABASE_PUBLISHABLE_OR_ANON_KEY_HERE'
+```
 
-## ✨ ฟีเจอร์
+with the public publishable/anon key.
+5. Upload this `index.html` plus the `images/` folder to GitHub Pages.
 
-- 📋 ตรวจ 5 หมวด: เปิดห้องอาหาร · SOP · พนักงาน · บริการ · ปิดห้องอาหาร (40 ข้อ)
-- 🪑 บันทึกความพึงพอใจตามโต๊ะลูกค้า + คอมเพลนต์ + วิธีแก้
-- 📸 แนบรูปภาพ (คลัง/กล้อง) หลายรูปต่อข้อ
-- 🔍 Executive Re-verification (ตรวจซ้ำแบบ Checklist)
-- 📊 KPI Dashboard + **Yearly Analytics** (เทียบ YoY หลายปี)
-- 📅 Daily/Weekly/Yearly reports
-- 📢 Complaint tracking + resolution + lesson learned
-- 💬 Share to LINE (พร้อมรูปภาพ)
-- 🖨️ พิมพ์ PDF สวยงาม (Inspection Report + Executive Report)
-- 🗜️ Auto-compact เก็บข้อมูลได้เป็นปี ๆ
-- 📱 ใช้ได้ทั้งมือถือและคอมพิวเตอร์
+Never use a `service_role` or secret key in the browser.
 
-## 💾 การจัดเก็บข้อมูล
+## Important
 
-ข้อมูลเก็บใน browser (localStorage) — ไม่ต้องมี server
-- Auto-compact ลบรูปหลัง 30 วัน (เก็บ metadata + คะแนน)
-- เก็บได้ 3+ ปี ในพื้นที่ 5MB
-- Export ข้อมูลเป็น JSON ได้จาก Admin > Data
-
-## 📄 License
-
-Internal use for FAB Food Holding · Baiyoke & Queensland Hotel Bangkok
+This version uses anonymous Supabase Auth for the shared data layer. The existing app login screen is still the current UI role gate. For stronger production security, migrate the four local roles to Supabase Auth email/password accounts and enforce role-based RLS policies.
