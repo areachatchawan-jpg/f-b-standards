@@ -1,3 +1,4 @@
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
 <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
@@ -22,6 +23,23 @@
   }
   * { font-family: 'Prompt', sans-serif; -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
   body { background: var(--bg); color: var(--text); min-height: 100vh; margin: 0; }
+  html { width: 100%; min-height: 100%; }
+  body { width: 100%; overflow-x: hidden; }
+  #app { width: 100%; min-height: 100vh; }
+  img { max-width: 100%; height: auto; }
+  @media (max-width: 767px) {
+    .app-header { padding-left: 10px !important; padding-right: 10px !important; }
+    .app-header .max-w-6xl { gap: 8px; }
+    .app-header .nav-btn { padding: 8px 9px; font-size: 11px; }
+    .login-page { padding: 24px 14px 32px !important; }
+    .login-page > .w-full { gap: 18px !important; }
+    .login-page .luxe-card { padding: 22px !important; border-radius: 20px; }
+    .login-page .luxe-logo-card { padding: 10px !important; }
+    .login-page .luxe-logo-card img { height: 42px !important; }
+    .login-page h1 { font-size: 2.8rem !important; }
+    .login-page .text-3xl { font-size: 1.65rem !important; }
+    .bottom-bar { padding-left: 10px; padding-right: 10px; }
+  }
   .display-font { font-family: 'Playfair Display', serif; }
   .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 18px; box-shadow: var(--card-shadow); }
   .card-hover { transition: all 0.3s cubic-bezier(0.4,0,0.2,1); cursor: pointer; }
@@ -899,22 +917,16 @@ function renderLogin() {
         <form id="login-form" class="space-y-4">
           <div>
             <label class="text-xs mb-2 block" style="color:#5c5138;font-weight:600;letter-spacing:0.15em;text-transform:uppercase">Username</label>
-            <input id="login-user" placeholder="admin, exec, manager, inspector" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false">
+            <input id="login-user" placeholder="กรอกชื่อผู้ใช้งาน" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false">
           </div>
           <div>
             <label class="text-xs mb-2 block" style="color:#5c5138;font-weight:600;letter-spacing:0.15em;text-transform:uppercase">Password</label>
-            <input id="login-pass" type="password" placeholder="••••" autocomplete="current-password">
+            <input id="login-pass" type="password" placeholder="กรอกรหัสผ่าน" autocomplete="current-password">
           </div>
           <div id="login-err" style="display:none;background:#fee2e2;color:#a52d33;border:1px solid #fca5a5;padding:10px 12px;border-radius:10px;font-size:12px"></div>
           <button data-action="login" type="submit" class="w-full mt-2 py-3 rounded-xl font-semibold transition" style="background:linear-gradient(135deg,#d4af6c,#b8892f 55%,#8b6820);color:#fff;border:0;box-shadow:0 10px 24px rgba(139,104,32,0.35);cursor:pointer;letter-spacing:0.15em;text-transform:uppercase;font-size:13px">
             เข้าสู่ระบบ · Login
           </button>
-          <div class="text-xs text-center pt-4 mt-2" style="color:#8b6820;border-top:1px solid #f2e6c8">
-            <div class="mb-2" style="color:#5c5138;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;font-size:10px">Demo Accounts · รหัสผ่าน 1234</div>
-            <div class="flex gap-1.5 justify-center flex-wrap">
-              ${['admin','exec','manager','inspector'].map(u => `<span style="background:#faf5e8;padding:5px 12px;border-radius:8px;color:#8b6820;font-weight:600;font-size:10px;border:1px solid #ecdcb7;letter-spacing:0.05em">${u}</span>`).join('')}
-            </div>
-          </div>
         </form>
       </div>
     </div>
