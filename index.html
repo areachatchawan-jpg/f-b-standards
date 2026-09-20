@@ -225,6 +225,15 @@ const FNB_CLOUD = {
   table: 'fnb_cloud',
   photoBucket: 'fnb-photos'
 };
+
+// ===== SYSTEM TEST HISTORY (reference only) =====
+// Permanent summary of completed load/concurrency tests. These records are
+// intentionally separate from operational F&B inspections and complaints.
+const SYSTEM_TEST_HISTORY = [
+  {date:'2026-09-20',label:'20 ก.ย. 2569 · 01:07',name:'100-record Database Upsert Test',type:'DB WRITE',status:'PASS',statusClass:'pass',target:'100 records',success:'100/100',errors:0,db:'100/100',time:'2,352 ms',runId:'LOADTEST_20260920010729',note:'ทดสอบการบันทึกข้อมูล 100 รายการพร้อมกัน และตรวจสอบข้อมูลในฐานข้อมูลหลังจบการทดสอบ'},
+  {date:'2026-09-20',label:'20 ก.ย. 2569 · 01:27',name:'100 Client Full Concurrency Test',type:'FULL CONCURRENCY',status:'NOT PASS',statusClass:'warn',target:'100 simulated clients',success:'38/100',errors:62,db:'38/100',time:'15,263 ms',runId:'LOADTEST100C_20260920012757',note:'62 clients ติด setSession timeout จึงไม่ใช้รอบนี้เป็น baseline สำหรับ production capacity'},
+  {date:'2026-09-20',label:'20 ก.ย. 2569 · รอบล่าสุด',name:'100 Client DB Concurrency Test (Fixed)',type:'DB CONCURRENCY',status:'PASS',statusClass:'pass',target:'100 simulated clients',success:'100/100',errors:0,db:'100/100',time:'3,306 ms',runId:'FINAL-DB-CONCURRENCY-100',note:'แยก Authentication ออกจากการวัด DB concurrency และใช้ access token เดียวกัน; รอบนี้ผ่าน 100/100'}
+];
 let FNB_SB = null;
 let FNB_CLOUD_READY = false;
 let FNB_CLOUD_TIMER = null;
@@ -291,7 +300,7 @@ async function cloudLoadState() {
   if (error) throw error;
   const list = rows || [];
   const cfgRow = list.find(r => r.bucket === 'config' && r.item_id === 'state');
-  const cloudIns = list.filter(r => r.bucket === 'inspections');
+  const cloudIns = list.filter(r => r.bucket === 'inspections' && !r.payload?.testRun && !String(r.item_id||'').startsWith('LOADTEST_'));
   const cloudComp = list.filter(r => r.bucket === 'complaints');
 
   if (!cfgRow && cloudIns.length === 0 && cloudComp.length === 0) {
@@ -318,7 +327,7 @@ async function cloudLoadState() {
 
   // Merge local-only legacy records into the cloud once, without deleting anything already online.
   for (const item of (DATA.inspections || [])) {
-    if (!cloudInsMap.has(item.id)) cloudInsMap.set(item.id, item);
+    if (!isLoadTestInspection(item) && !cloudInsMap.has(item.id)) cloudInsMap.set(item.id, item);
   }
   for (const item of (DATA.complaints || [])) {
     if (!cloudCompMap.has(item.id)) cloudCompMap.set(item.id, item);
@@ -595,6 +604,11 @@ const DEFAULT_DATA = {
   settings: { autoCompact: true, compactDays: 30 },
 };
 
+function isLoadTestInspection(item) {
+  const id = String(item?.id || item?.item_id || '');
+  return item?.testRun === true || item?.inspectorId === 'load-test' || id.startsWith('LOADTEST_') || id.startsWith('loadtest-');
+}
+
 let DATA = loadData();
 let SESSION = { user: null };
 let VIEW_STATE = { page: 'login', hotelId: null, outletId: null, inspection: null, historyId: null, adminTab: 'users', inspectionType: 'standards', complaintForm: null, historyFilter: 'all', kpiHotel: 'baiyoke' };
@@ -613,6 +627,8 @@ function loadData() {
       if (!p.inspections) p.inspections = [];
       if (!p.complaints) p.complaints = [];
       if (!p.settings) p.settings = { autoCompact: true, compactDays: 30 };
+      // Never mix synthetic LOADTEST rows into operational F&B history.
+      p.inspections = p.inspections.filter(i => !isLoadTestInspection(i));
       // Migrate old inspections: ensure they have tables array
       p.inspections.forEach(i => { if (!i.tables) i.tables = []; });
       return p;
@@ -724,7 +740,7 @@ function render() {
       id: focused.id,
       selStart: focused.selectionStart, selEnd: focused.selectionEnd,
     } : null;
-    const views = { login: renderLogin, home: renderHome, outlets: renderOutlets, inspection: renderInspection, summary: renderSummary, history: renderHistory, kpi: renderKPI, admin: renderAdmin, complaints: renderComplaints, complaintForm: renderComplaintForm, execReview: renderExecReview, dailySummary: renderDailySummary };
+    const views = { login: renderLogin, home: renderHome, outlets: renderOutlets, inspection: renderInspection, summary: renderSummary, history: renderHistory, kpi: renderKPI, testHistory: renderTestHistory, admin: renderAdmin, complaints: renderComplaints, complaintForm: renderComplaintForm, execReview: renderExecReview, dailySummary: renderDailySummary };
     app.innerHTML = (views[VIEW_STATE.page] || renderLogin)();
     if (VIEW_STATE.page === 'kpi') setTimeout(drawKPI, 50);
     // Restore scroll and focus
@@ -1068,6 +1084,7 @@ const ACTIONS = {
   exportData: () => exportData(),
   clearInspections: () => clearInspections(),
   clearOldInspections: () => clearOldInspections(),
+  cleanupLoadTests: () => cleanupLoadTests(),
   compactNow: () => compactNow(),
   resetAll: () => resetAll(),
   shareLine: (d) => shareLine(d.type),
@@ -1223,6 +1240,7 @@ function topbar() {
         <button data-action="nav" data-page="history" class="nav-btn ${p==='history'?'active':''}" title="History">📋 <span class="hidden md:inline">ประวัติ</span> ${pendingCount>0 && canSeeExecReview()?`<span class="badge badge-red" style="margin-left:4px">${pendingCount}</span>`:''}</button>
         <button data-action="nav" data-page="complaints" class="nav-btn ${p==='complaints'?'active':''}" title="Complaints">📢 <span class="hidden md:inline">คอมเพลนต์</span> ${openComplaints>0?`<span class="badge badge-red" style="margin-left:4px">${openComplaints}</span>`:''}</button>
         ${isExec()?`<button data-action="nav" data-page="kpi" class="nav-btn ${p==='kpi'?'active':''}" title="Reports">📊 <span class="hidden md:inline">รายงาน</span></button>`:''}
+        ${isExec()?`<button data-action="nav" data-page="testHistory" class="nav-btn ${p==='testHistory'?'active':''}" title="System Test History">🧪 <span class="hidden md:inline">ประวัติทดสอบ</span></button>`:''}
         ${isAdmin() ? `<button data-action="nav" data-page="admin" class="nav-btn ${p==='admin'?'active':''}" title="Admin">⚙️ <span class="hidden md:inline">ตั้งค่า</span></button>` : ''}
         <button data-action="logout" class="nav-btn" style="color:#dc2626" title="Logout">🚪 <span class="hidden md:inline">ออก</span></button>
       </div>
@@ -1782,12 +1800,20 @@ function compressImage(file, cb) {
   reader.readAsDataURL(file);
 }
 
-// Get the checklist for an outlet — uses outlet-specific override if present, else main
+// Get the checklist for an outlet — defensive against legacy/malformed cloud data.
+function normalizeChecklistList(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter(Boolean).map((cl, idx) => ({
+    ...cl, id: cl.id || `legacy_cl_${idx}`, name: cl.name || 'หมวดตรวจ', icon: cl.icon || '📋',
+    items: Array.isArray(cl.items) ? cl.items.filter(Boolean).map((it, j) => ({
+      ...it, id: it.id || `legacy_item_${idx}_${j}`, text: it.text || '-'
+    })) : []
+  }));
+}
 function getChecklistForOutlet(outletId) {
-  if (outletId && DATA.outletChecklists?.[outletId]?.length) {
-    return DATA.outletChecklists[outletId];
-  }
-  return DATA.checklists.main || [];
+  const custom = outletId ? normalizeChecklistList(DATA.outletChecklists?.[outletId]) : [];
+  if (custom.length) return custom;
+  return normalizeChecklistList(DATA.checklists?.main);
 }
 function getInspectionChecklist(insp) {
   return getChecklistForOutlet(insp?.outletId);
@@ -2079,9 +2105,11 @@ function renderSummary() {
 }
 
 function categoryScore(insp, cl) {
+  const items = Array.isArray(cl?.items) ? cl.items.filter(Boolean) : [];
+  const values = insp?.items || {};
   let p=0;
-  cl.items.forEach(it => { const s = insp.items[it.id]?.status; if (s==='pass') p+=100; else if (s==='warn') p+=50; });
-  return { score: cl.items.length ? Math.round(p/cl.items.length) : 0 };
+  items.forEach(it => { const st = values[it?.id]?.status; if (st==='pass') p+=100; else if (st==='warn') p+=50; });
+  return { score: items.length ? Math.round(p/items.length) : 0 };
 }
 function countStatus(insp, target) {
   const cls = getChecklistForOutlet(insp.outletId);
@@ -3284,6 +3312,15 @@ function renderKPI() {
       <div class="card p-4" style="background:linear-gradient(135deg,#faf5e8,#f2e6c8)"><div class="text-xs font-semibold" style="color:#8b6820;letter-spacing:0.05em">🔧 อัตราแก้ปัญหา · Resolved</div><div class="text-3xl font-bold mt-1" style="color:#8b6820">${resolvedRate}%</div></div>
     </div>
 
+    <!-- System Test History -->
+    <div class="card p-5 mb-4 print-no-break" style="background:linear-gradient(135deg,#fefdfa,#f7f4ec);border-color:#ecdcb7">
+      <div class="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <div><div class="font-semibold" style="color:#1a1611">🧪 ประวัติการทดสอบระบบ · System Test History</div><div class="text-xs" style="color:#5c5138">เก็บผล Load / Concurrency Test ไว้เป็นหลักฐานแยกจาก KPI F&B</div></div>
+        <button data-action="nav" data-page="testHistory" class="btn-secondary no-print" style="padding:7px 12px;font-size:11px">ดูทั้งหมด · View All</button>
+      </div>
+      <div class="space-y-2">${SYSTEM_TEST_HISTORY.map(x=>`<div class="flex items-center gap-2 py-2" style="border-top:1px solid #ecdcb7"><span class="badge ${x.statusClass==='pass'?'badge-mint':'badge-amber'}">${x.status}</span><div class="flex-1 min-w-0 text-xs" style="color:#1a1611"><b>${x.name}</b> · ${x.success} · DB ${x.db}</div><div class="text-xs" style="color:#8b6820">${x.time}</div></div>`).join('')}</div>
+    </div>
+
     <!-- Daily KPI Highlight -->
     <div class="card p-5 mb-4 print-no-break" style="background:linear-gradient(135deg,#fefdfa,#faf5e8);border-color:#d4af6c">
       <div class="flex items-center gap-3 mb-4 flex-wrap">
@@ -3568,22 +3605,23 @@ function renderVerifyAnalysis() {
 }
 
 function renderTopFail() {
-  const c = {};
-  DATA.inspections.filter(i=>i.status==='done').forEach(i => {
-    const cls = getChecklistForOutlet(i.outletId);
-    cls.forEach(cl => cl.items.forEach(it => {
-      if (i.items[it.id]?.status === 'fail') c[it.id] = (c[it.id]||0) + 1;
-    }));
+  const counts = {};
+  const itemText = {};
+  (Array.isArray(DATA.inspections) ? DATA.inspections : []).filter(i=>i?.status==='done').forEach(i => {
+    getChecklistForOutlet(i?.outletId).forEach(cl => {
+      (Array.isArray(cl?.items) ? cl.items : []).forEach(it => {
+        if (!it?.id) return;
+        itemText[it.id] = it.text || it.id;
+        if (i.items?.[it.id]?.status === 'fail') counts[it.id] = (counts[it.id]||0) + 1;
+      });
+    });
   });
-  const list = Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,5);
-  if (list.length === 0) return '<div class="text-sm text-center py-4" style="color:#5c5138">🎉 ยังไม่มีหัวข้อที่ตก · No failed items</div>';
-  return list.map(([id,cnt]) => {
-    const it = Object.values(DATA.checklists).flat().flatMap(cl=>cl.items).find(x=>x.id===id);
-    return `<div class="flex items-center gap-2 py-2" style="border-top:1px solid #f2e6c8">
-      <div class="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold" style="background:#fee2e2;color:#a52d33">${cnt}</div>
-      <div class="text-sm flex-1" style="color:#1a1611">${it?.text||id}</div>
-    </div>`;
-  }).join('');
+  const list = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  if (!list.length) return '<div class="text-sm text-center py-4" style="color:#5c5138">🎉 ยังไม่มีหัวข้อที่ตก · No failed items</div>';
+  return list.map(([id,cnt]) => `<div class="flex items-center gap-2 py-2" style="border-top:1px solid #f2e6c8">
+    <div class="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold" style="background:#fee2e2;color:#a52d33">${cnt}</div>
+    <div class="text-sm flex-1" style="color:#1a1611">${itemText[id]||id}</div>
+  </div>`).join('');
 }
 
 function renderInspectorRank() {
@@ -3693,6 +3731,50 @@ function drawKPI() {
       options: { ...opts(), scales: { ...opts().scales, y: { ...opts().scales.y, max: undefined } }, plugins: { legend: { display: false } } }
     });
   }
+}
+
+// SYSTEM TEST HISTORY — permanent reference for completed load/concurrency tests
+function renderTestHistory() {
+  const passCount = SYSTEM_TEST_HISTORY.filter(x=>x.status==='PASS').length;
+  const last = SYSTEM_TEST_HISTORY[SYSTEM_TEST_HISTORY.length-1];
+  return `
+  ${topbar()}
+  <div class="max-w-6xl mx-auto px-4 pb-16 fade-in">
+    <div class="flex items-center justify-between gap-3 mb-5 flex-wrap">
+      <div><div class="text-xs font-semibold" style="color:#8b6820;letter-spacing:.12em;text-transform:uppercase">SYSTEM VALIDATION</div>
+        <h1 class="display-font text-3xl font-bold" style="color:#1a1611">🧪 ประวัติการทดสอบระบบ</h1>
+        <p class="text-sm" style="color:#5c5138">Load Test / Concurrency Test · เก็บเป็นหลักฐานอ้างอิงแยกจากข้อมูลตรวจ F&B จริง</p></div>
+      <button data-action="nav" data-page="kpi" class="btn-secondary">← กลับรายงาน · Back to Report</button>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+      <div class="card p-4"><div class="text-xs font-semibold" style="color:#5c5138">รอบทดสอบ · Test Runs</div><div class="text-3xl font-bold mt-1">${SYSTEM_TEST_HISTORY.length}</div></div>
+      <div class="card p-4" style="background:#f0fdf4"><div class="text-xs font-semibold" style="color:#166534">ผ่าน · PASS</div><div class="text-3xl font-bold mt-1" style="color:#166534">${passCount}</div></div>
+      <div class="card p-4" style="background:#fff7ed"><div class="text-xs font-semibold" style="color:#c2410c">ไม่ผ่าน · NOT PASS</div><div class="text-3xl font-bold mt-1" style="color:#c2410c">${SYSTEM_TEST_HISTORY.length-passCount}</div></div>
+      <div class="card p-4" style="background:#faf5e8"><div class="text-xs font-semibold" style="color:#8b6820">Baseline ล่าสุด</div><div class="text-3xl font-bold mt-1" style="color:#8b6820">${last.success}</div><div class="text-xs" style="color:#5c5138">${last.time}</div></div>
+    </div>
+    <div class="card p-5 mb-5" style="background:linear-gradient(135deg,#fefdfa,#faf5e8);border-color:#d4af6c">
+      <div class="font-bold" style="color:#1a1611">🔒 สำคัญ · Data Separation</div>
+      <div class="text-sm mt-1" style="color:#5c5138;line-height:1.7">ประวัตินี้เป็นบันทึกผลการทดสอบระบบเท่านั้น ไม่ใช่ Inspection / Complaint ของโรงแรม และไม่ถูกนำไปรวมใน KPI การปฏิบัติงาน F&B</div>
+      <div class="text-xs mt-2" style="color:#8b6820">สามารถลบข้อมูล LOADTEST ใน Supabase ได้ภายหลังโดยไม่ทำให้ประวัติสรุปนี้หาย</div>
+    </div>
+    <div class="space-y-3">
+      ${SYSTEM_TEST_HISTORY.map(x=>`<div class="card p-5" style="border-left:5px solid ${x.statusClass==='pass'?'#16a34a':'#d97706'}">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div class="flex items-start gap-3 flex-1 min-w-0"><div class="w-12 h-12 rounded-xl flex items-center justify-center text-xl shrink-0" style="background:${x.statusClass==='pass'?'#dcfce7':'#ffedd5'}">${x.statusClass==='pass'?'✓':'⚠'}</div>
+            <div class="min-w-0"><div class="text-xs font-semibold" style="color:#8b6820">${x.label} · ${x.type}</div><div class="font-bold text-lg" style="color:#1a1611">${x.name}</div><div class="text-xs mt-1" style="color:#5c5138">Run ID: <code>${x.runId}</code></div></div></div>
+          <span class="badge ${x.statusClass==='pass'?'badge-mint':'badge-amber'}" style="font-size:12px;padding:7px 12px">${x.status==='PASS'?'✓ PASS':'⚠ NOT PASS'}</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mt-4">
+          <div class="rounded-xl p-3" style="background:#f7f4ec"><div class="text-xs" style="color:#5c5138">Target</div><b>${x.target}</b></div>
+          <div class="rounded-xl p-3" style="background:#f0fdf4"><div class="text-xs" style="color:#166534">สำเร็จ</div><b style="color:#166534">${x.success}</b></div>
+          <div class="rounded-xl p-3" style="background:${x.errors?'#fff7ed':'#f0fdf4'}"><div class="text-xs" style="color:#5c5138">Errors</div><b style="color:${x.errors?'#c2410c':'#166534'}">${x.errors}</b></div>
+          <div class="rounded-xl p-3" style="background:#f7f4ec"><div class="text-xs" style="color:#5c5138">DB Verify</div><b>${x.db}</b></div>
+          <div class="rounded-xl p-3" style="background:#faf5e8"><div class="text-xs" style="color:#8b6820">เวลา</div><b style="color:#8b6820">${x.time}</b></div>
+        </div>
+        <div class="text-sm mt-3" style="color:#5c5138">${x.note}</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
 }
 
 // ADMIN
@@ -4382,6 +4464,7 @@ function renderAdminData() {
       <label class="btn-secondary py-4 cursor-pointer text-center" style="display:block">📤 นำเข้าข้อมูล (JSON)<input type="file" accept=".json" data-import-input style="display:none"></label>
       <button data-action="compactNow" class="btn-secondary py-4" style="border-color:#8b6820;color:#8b6820">🗜️ Compact ทันที · ลบรูปเก่า</button>
       <button data-action="clearOldInspections" class="btn-secondary py-4" style="border-color:#dc2626;color:#dc2626">🧹 ลบข้อมูลเก่ากว่า 90 วัน</button>
+      <button data-action="cleanupLoadTests" class="btn-secondary py-4" style="border-color:#d97706;color:#92400e">🧪 ลบประวัติ LOADTEST</button>
       <button data-action="clearInspections" class="btn-danger py-4">🗑️ ลบประวัติการตรวจทั้งหมด</button>
       <button data-action="resetAll" class="btn-danger py-4">⚠️ รีเซ็ตระบบทั้งหมด</button>
     </div>
@@ -4463,6 +4546,34 @@ function importData(ev) {
   };
   r.readAsText(f);
 }
+async function cleanupLoadTests() {
+  const localCount = (DATA.inspections||[]).filter(isLoadTestInspection).length;
+  if (!confirm(`ลบข้อมูล LOADTEST ออกจากระบบ F&B?\n\nข้อมูลตรวจจริงจะไม่ถูกลบ\nประวัติสรุปการทดสอบในเมนู “ประวัติทดสอบ” จะยังคงอยู่`)) return;
+  DATA.inspections = (DATA.inspections||[]).filter(i => !isLoadTestInspection(i));
+  saveDataLocalOnly();
+  if (FNB_SB) {
+    try {
+      const { data, error } = await FNB_SB.from(FNB_CLOUD.table).select('item_id,payload').eq('bucket','inspections').like('item_id','LOADTEST_%');
+      if (error) throw error;
+      const ids = (data||[]).map(x=>x.item_id).filter(Boolean);
+      for (let i=0;i<ids.length;i+=100) {
+        const chunk = ids.slice(i,i+100);
+        const r = await FNB_SB.from(FNB_CLOUD.table).delete().eq('bucket','inspections').in('item_id',chunk);
+        if (r.error) throw r.error;
+      }
+      if (FNB_CLOUD_CACHE.inspections) {
+        for (const id of ids) FNB_CLOUD_CACHE.inspections.delete(id);
+      }
+      toast(`🧪 ลบ LOADTEST แล้ว ${ids.length} รายการ · ข้อมูลจริงไม่ถูกลบ`, 'success');
+    } catch (e) {
+      toast(`ลบใน Cloud ไม่สำเร็จ · ${e.message||e}`, 'warn');
+    }
+  } else {
+    toast(`ลบ LOADTEST ในเครื่องแล้ว ${localCount} รายการ · เปิด Cloud ก่อนเพื่อลบ Supabase`, 'info');
+  }
+  render();
+}
+
 function clearInspections() { if (!confirm('ลบประวัติทั้งหมด?')) return; DATA.inspections = []; saveData(); render(); toast('ลบแล้ว'); }
 function resetAll() {
   if (!confirm('รีเซ็ตระบบ?')) return;
@@ -4484,4 +4595,3 @@ function getGlobalStats() {
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { render(); initCloud(); });
 else { render(); initCloud(); }
 </script>
-
