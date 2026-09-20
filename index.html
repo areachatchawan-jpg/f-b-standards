@@ -1451,7 +1451,7 @@ function nav(page, extra={}) {
   _forceScrollTop = isPageChange && _restoreScrollY === null;
   render();
   // History/report pages are shared views: always pull the newest cloud rows when opened.
-  if ((page === 'history' || page === 'kpi' || page === 'dailySummary') && FNB_CLOUD_READY) {
+  if ((page === 'history' || page === 'summary' || page === 'kpi' || page === 'dailySummary') && FNB_CLOUD_READY) {
     refreshCloudFromServer(`nav:${page}`);
   }
 }
@@ -1899,7 +1899,14 @@ const ACTIONS = {
   delOutletCategory: (d) => delOutletCategory(d.outletId, d.clId),
   execVerify: (d) => execVerify(d.id, 'verified'),
   execReject: (d) => execVerify(d.id, 'rejected'),
-  startExecReview: (d) => nav('execReview', { historyId: d.id }),
+  startExecReview: (d) => {
+    if (!canSeeExecReview()) { toast('ไม่มีสิทธิ์ตรวจซ้ำ · Executive/Admin only', 'warn'); return; }
+    const insp = DATA.inspections.find(x => x.id === d.id);
+    if (!insp || insp.status !== 'done') { toast('งานนี้ยังไม่เสร็จจาก Manager', 'warn'); return; }
+    if (!insp.execReview || !insp.execReview.status) insp.execReview = { status: 'pending', items: {} };
+    if (!insp.execReview.items) insp.execReview.items = {};
+    nav('execReview', { historyId: d.id });
+  },
   setExecItem: (d) => {
     const insp = DATA.inspections.find(x => x.id === VIEW_STATE.historyId);
     if (!insp.execReview) insp.execReview = { items: {} };
@@ -2958,6 +2965,12 @@ function renderSummary() {
   // KPI ใช้ effectiveScore
   const score = isReviewed ? effectiveScore : managerScore;
   const grade = isRejected ? {t:'F',c:'#a52d33',b:'ไม่ผ่าน (Exec Reject)'} : score>=90?{t:'A',c:'#166534',b:'ดีเยี่ยม'}:score>=75?{t:'B',c:'#166534',b:'ดี'}:score>=60?{t:'C',c:'#8b6820',b:'พอใช้'}:{t:'D',c:'#a52d33',b:'ต้องปรับปรุง'};
+  // Defensive migration at render time: any completed inspection without an explicit
+  // executive-review state must be reviewable as Pending on every device.
+  if (insp.status === 'done' && (!insp.execReview || !insp.execReview.status)) {
+    insp.execReview = { status: 'pending', items: {} };
+  }
+  if (insp.execReview?.status === 'pending' && !insp.execReview.items) insp.execReview.items = {};
   const canReview = canSeeExecReview() && insp.status === 'done' && insp.execReview?.status === 'pending';
   const rev = canSeeExecReview() ? insp.execReview : null;
   return `
@@ -3488,6 +3501,7 @@ function renderHistory() {
                   <div class="text-2xl font-bold" style="color:${scoreColor}">${effScore}%</div>
                   ${canSeeRev && (i.score||0) !== effScore ? `<div class="text-[10px]" style="color:#78716c">M: ${i.score||0}%</div>`:''}
                 </div>
+                ${canSeeRev && i.status === 'done' && (!i.execReview || i.execReview.status === 'pending') ? `<button data-action="startExecReview" data-id="${i.id}" title="ตรวจซ้ำ · Verify" class="btn-primary" style="padding:8px 12px;font-size:12px">🔍 ตรวจซ้ำ</button>` : ''}
                 ${(isAdmin() || i.inspectorId === SESSION.user.id)?`<button data-action="editInspection" data-id="${i.id}" title="แก้ไข · Edit" style="color:#8b6820;background:#faf5e8;border:1px solid #ecdcb7;font-size:12px;cursor:pointer;padding:4px 10px;border-radius:6px;font-weight:600">✏️ แก้</button>`:''}
                 ${isAdmin()?`<button data-action="delInsp" data-id="${i.id}" style="color:#dc2626;background:none;border:0;font-size:14px;cursor:pointer;padding:4px 8px">🗑️</button>`:''}
               </div>
