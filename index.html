@@ -296,6 +296,29 @@ async function initCloud() {
   }
 }
 
+function cloudTimestamp(item, fallback=0) {
+  if (!item) return fallback;
+  const n = Number(item.updatedAt || item.createdAt || 0);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function remoteTimestamp(row) {
+  if (!row) return 0;
+  const parsed = Date.parse(row.updated_at || '');
+  if (Number.isFinite(parsed)) return parsed;
+  return cloudTimestamp(row.payload, 0);
+}
+
+function chooseNewestCloudRow(localItem, remoteRow) {
+  if (!localItem && !remoteRow) return null;
+  if (!remoteRow) return { value: localItem, localNewer: true };
+  if (!localItem) return { value: remoteRow.payload, localNewer: false };
+  const lt = cloudTimestamp(localItem);
+  const rt = remoteTimestamp(remoteRow);
+  if (lt > rt) return { value: localItem, localNewer: true };
+  return { value: remoteRow.payload, localNewer: false };
+}
+
 async function cloudLoadState() {
   if (!FNB_SB) return;
   const { data: rows, error } = await FNB_SB.from(FNB_CLOUD.table).select('bucket,item_id,payload,updated_at');
@@ -306,7 +329,6 @@ async function cloudLoadState() {
   const cloudComp = list.filter(r => r.bucket === 'complaints');
 
   if (!cfgRow && cloudIns.length === 0 && cloudComp.length === 0) {
-    // First device becomes the migration source. Existing local data is preserved.
     FNB_CLOUD_CACHE.config = cloudConfigPayload();
     FNB_CLOUD_CACHE.inspections = new Map((DATA.inspections || []).map(x => [x.id, JSON.parse(JSON.stringify(x))]));
     FNB_CLOUD_CACHE.complaints = new Map((DATA.complaints || []).map(x => [x.id, JSON.parse(JSON.stringify(x))]));
@@ -324,23 +346,29 @@ async function cloudLoadState() {
     FNB_CLOUD_CACHE.config = JSON.parse(JSON.stringify(p));
   }
 
-  const cloudInsMap = new Map(cloudIns.map(r => [r.item_id, r.payload]));
-  const cloudCompMap = new Map(cloudComp.map(r => [r.item_id, r.payload]));
+  const cloudInsRows = new Map(cloudIns.map(r => [r.item_id, r]));
+  const cloudCompRows = new Map(cloudComp.map(r => [r.item_id, r]));
+  const localIns = new Map((DATA.inspections || []).filter(x => !isLoadTestInspection(x)).map(x => [x.id, x]));
+  const localComp = new Map((DATA.complaints || []).map(x => [x.id, x]));
 
-  // Merge local-only legacy records into the cloud once, without deleting anything already online.
-  for (const item of (DATA.inspections || [])) {
-    if (!isLoadTestInspection(item) && !cloudInsMap.has(item.id)) cloudInsMap.set(item.id, item);
-  }
-  for (const item of (DATA.complaints || [])) {
-    if (!cloudCompMap.has(item.id)) cloudCompMap.set(item.id, item);
+  const mergedIns = new Map();
+  const mergedComp = new Map();
+
+  for (const id of new Set([...localIns.keys(), ...cloudInsRows.keys()])) {
+    const chosen = chooseNewestCloudRow(localIns.get(id), cloudInsRows.get(id));
+    if (chosen?.value) mergedIns.set(id, chosen.value);
   }
 
-  DATA.inspections = Array.from(cloudInsMap.values());
-  DATA.complaints = Array.from(cloudCompMap.values());
+  for (const id of new Set([...localComp.keys(), ...cloudCompRows.keys()])) {
+    const chosen = chooseNewestCloudRow(localComp.get(id), cloudCompRows.get(id));
+    if (chosen?.value) mergedComp.set(id, chosen.value);
+  }
+
+  DATA.inspections = Array.from(mergedIns.values());
+  DATA.complaints = Array.from(mergedComp.values());
   FNB_CLOUD_CACHE.inspections = new Map(DATA.inspections.map(x => [x.id, JSON.parse(JSON.stringify(x))]));
   FNB_CLOUD_CACHE.complaints = new Map(DATA.complaints.map(x => [x.id, JSON.parse(JSON.stringify(x))]));
 
-  // Push any local-only records merged above.
   await cloudSyncNow(true);
   saveDataLocalOnly();
   render();
@@ -376,6 +404,49 @@ function cloudRowPayload(bucket, item) {
     }
   }
   return payload;
+}
+
+async function verifyCloudRows(expectedRows) {
+  const grouped = new Map();
+  for (const row of expectedRows) {
+    if (!grouped.has(row.bucket)) grouped.set(row.bucket, []);
+    grouped.get(row.bucket).push(row);
+  }
+
+  for (const [bucket, rows] of grouped) {
+    for (let i = 0; i < rows.length; i += 100) {
+      const chunk = rows.slice(i, i + 100);
+      const ids = chunk.map(r => r.item_id);
+      const { data, error } = await FNB_SB
+        .from(FNB_CLOUD.table)
+        .select('bucket,item_id,payload,updated_at')
+        .eq('bucket', bucket)
+        .in('item_id', ids);
+      if (error) throw error;
+
+      const got = new Map((data || []).map(r => [r.item_id, r]));
+      for (const expected of chunk) {
+        const actual = got.get(expected.item_id);
+        if (!actual) throw new Error(`Cloud read-back ไม่พบ ${bucket}/${expected.item_id}`);
+        if (jsonStable(actual.payload) !== jsonStable(expected.payload)) {
+          throw new Error(`Cloud read-back ข้อมูลไม่ตรง ${bucket}/${expected.item_id}`);
+        }
+      }
+    }
+  }
+}
+
+async function verifyCloudDeletes(bucket, ids) {
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    const { data, error } = await FNB_SB
+      .from(FNB_CLOUD.table)
+      .select('item_id')
+      .eq('bucket', bucket)
+      .in('item_id', chunk);
+    if (error) throw error;
+    if ((data || []).length) throw new Error(`Cloud delete verification ไม่ผ่าน ${bucket}`);
+  }
 }
 
 async function cloudSyncNow(force = false) {
@@ -414,14 +485,19 @@ async function cloudSyncNow(force = false) {
       const chunk = upserts.slice(i, i + 100);
       const { error } = await FNB_SB.from(FNB_CLOUD.table).upsert(chunk, { onConflict: 'bucket,item_id' });
       if (error) throw error;
+      await verifyCloudRows(chunk);
     }
+
     if (deletesIns.length) {
       const { error } = await FNB_SB.from(FNB_CLOUD.table).delete().eq('bucket', 'inspections').in('item_id', deletesIns);
       if (error) throw error;
+      await verifyCloudDeletes('inspections', deletesIns);
     }
+
     if (deletesComp.length) {
       const { error } = await FNB_SB.from(FNB_CLOUD.table).delete().eq('bucket', 'complaints').in('item_id', deletesComp);
       if (error) throw error;
+      await verifyCloudDeletes('complaints', deletesComp);
     }
 
     FNB_CLOUD_CACHE.config = JSON.parse(JSON.stringify(cfg));
@@ -438,7 +514,7 @@ async function cloudSyncNow(force = false) {
 function scheduleCloudSync() {
   if (!FNB_CLOUD_READY) return;
   clearTimeout(FNB_CLOUD_TIMER);
-  FNB_CLOUD_TIMER = setTimeout(() => cloudSyncNow(false), 600);
+  FNB_CLOUD_TIMER = setTimeout(() => cloudSyncNow(false), 80);
 }
 
 function applyCloudRealtime(payload) {
@@ -460,9 +536,14 @@ function applyCloudRealtime(payload) {
       FNB_CLOUD_CACHE.inspections.delete(id);
     } else {
       const item = row.payload;
-      const idx = DATA.inspections.findIndex(x => x.id === id);
-      if (idx >= 0) DATA.inspections[idx] = item; else DATA.inspections.push(item);
-      FNB_CLOUD_CACHE.inspections.set(id, JSON.parse(JSON.stringify(item)));
+      const local = DATA.inspections.find(x => x.id === id);
+      const remoteTs = remoteTimestamp(row);
+      const localTs = cloudTimestamp(local);
+      if (!local || remoteTs >= localTs) {
+        const idx = DATA.inspections.findIndex(x => x.id === id);
+        if (idx >= 0) DATA.inspections[idx] = item; else DATA.inspections.push(item);
+        FNB_CLOUD_CACHE.inspections.set(id, JSON.parse(JSON.stringify(item)));
+      }
     }
   } else if (row.bucket === 'complaints') {
     const id = row.item_id;
@@ -471,9 +552,14 @@ function applyCloudRealtime(payload) {
       FNB_CLOUD_CACHE.complaints.delete(id);
     } else {
       const item = row.payload;
-      const idx = DATA.complaints.findIndex(x => x.id === id);
-      if (idx >= 0) DATA.complaints[idx] = item; else DATA.complaints.push(item);
-      FNB_CLOUD_CACHE.complaints.set(id, JSON.parse(JSON.stringify(item)));
+      const local = DATA.complaints.find(x => x.id === id);
+      const remoteTs = remoteTimestamp(row);
+      const localTs = cloudTimestamp(local);
+      if (!local || remoteTs >= localTs) {
+        const idx = DATA.complaints.findIndex(x => x.id === id);
+        if (idx >= 0) DATA.complaints[idx] = item; else DATA.complaints.push(item);
+        FNB_CLOUD_CACHE.complaints.set(id, JSON.parse(JSON.stringify(item)));
+      }
     }
   }
   saveDataLocalOnly();
@@ -2117,6 +2203,7 @@ function finishInspection() {
         resolvedBy: t.resolvedBy || (t.resolved ? SESSION.user.name : ''),
         lessonLearned: t.lessonLearned || '',
         createdAt: Date.now(),
+        updatedAt: Date.now(),
         fromInspection: insp.id,
         tableNumber: t.number,
       });
@@ -2910,8 +2997,10 @@ function saveResolution(id) {
   if (!note) { toast('กรุณากรอกวิธีแก้ไข', 'warn'); return; }
   const c = DATA.complaints.find(x => x.id === id);
   if (!c) return;
+  const now = Date.now();
   c.resolved = true;
-  c.resolvedAt = Date.now();
+  c.resolvedAt = now;
+  c.updatedAt = now;
   c.resolvedBy = SESSION.user.name;
   c.resolutionNote = note;
   c.customerSat = rf?.customerSat || 3;
@@ -2929,10 +3018,12 @@ function saveComplaint() {
     toast('กรุณากรอกให้ครบ (หมวด + ปัญหาย่อย + รายละเอียด + ห้องอาหาร)', 'warn');
     return;
   }
+  const now = Date.now();
   DATA.complaints.push({
     id: uid(), ...cf,
     resolved: false, reportedBy: SESSION.user.id, reporterName: SESSION.user.name,
-    createdAt: Date.now(),
+    createdAt: now,
+    updatedAt: now,
   });
   saveData();
   VIEW_STATE.complaintForm = null;
