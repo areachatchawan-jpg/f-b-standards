@@ -1,6 +1,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
-<meta name="app-build" content="2026-09-20-report-fix-v2">
+<meta name="app-build" content="2026-09-20-photo-evidence-kpi-v1">
 <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -238,6 +238,7 @@ const SYSTEM_TEST_HISTORY = [
 let FNB_SB = null;
 let FNB_CLOUD_READY = false;
 let FNB_CLOUD_TIMER = null;
+let FNB_PHOTO_CLEANUP_RUNNING = false;
 let FNB_CLOUD_SYNCING = false;
 let FNB_CLOUD_CACHE = { config: null, inspections: new Map(), complaints: new Map() };
 let FNB_CLOUD_TOASTED = false;
@@ -346,18 +347,26 @@ async function cloudLoadState() {
 }
 
 function cloudRowPayload(bucket, item) {
-  if (item === null || item === undefined) return item;
   let payload = JSON.parse(JSON.stringify(item));
-  if (!payload || typeof payload !== 'object') return payload;
   // Photos should be Supabase Storage URLs; never push large inline data URLs to the database.
   if (payload.items) {
     for (const v of Object.values(payload.items)) {
       if (Array.isArray(v.photos)) v.photos = v.photos.filter(p => typeof p === 'string' && /^https?:\/\//i.test(p));
+      if (Array.isArray(v.photoEvidence)) v.photoEvidence = v.photoEvidence.filter(x => x && typeof x.url === 'string' && /^https?:\/\//i.test(x.url));
+      if (v.photoEvidence?.length) v.photoEvidence = v.photoEvidence.map(x => ({
+        url: x.url, path: x.path || null, uploadedAt: x.uploadedAt || null,
+        uploadedBy: x.uploadedBy || null, uploadedByName: x.uploadedByName || null, stage: x.stage || 'manager'
+      }));
     }
   }
   if (payload.execReview?.items) {
     for (const v of Object.values(payload.execReview.items)) {
       if (typeof v.execPhoto === 'string' && !/^https?:\/\//i.test(v.execPhoto)) delete v.execPhoto;
+      if (Array.isArray(v.execPhotos)) v.execPhotos = v.execPhotos.filter(p => typeof p === 'string' && /^https?:\/\//i.test(p));
+      if (Array.isArray(v.execEvidence)) v.execEvidence = v.execEvidence.filter(x => x && typeof x.url === 'string' && /^https?:\/\//i.test(x.url)).map(x => ({
+        url: x.url, path: x.path || null, uploadedAt: x.uploadedAt || null,
+        uploadedBy: x.uploadedBy || null, uploadedByName: x.uploadedByName || null, stage: 'executive'
+      }));
     }
   }
   return payload;
@@ -479,16 +488,114 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([arr], { type: mime });
 }
 
-async function uploadPhotoToCloud(dataUrl, inspectionId, itemId) {
-  if (!FNB_CLOUD_READY || !FNB_SB) return dataUrl;
-  const path = `inspections/${inspectionId}/${itemId}/${uid()}.jpg`;
+function getStoragePathFromPublicUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  const marker = `/storage/v1/object/public/${FNB_CLOUD.photoBucket}/`;
+  const idx = url.indexOf(marker);
+  if (idx < 0) return null;
+  try { return decodeURIComponent(url.slice(idx + marker.length).split('?')[0]); } catch (_) { return url.slice(idx + marker.length).split('?')[0]; }
+}
+
+function getManagerPhotos(item) {
+  if (!item) return [];
+  if (Array.isArray(item.photos)) return item.photos.filter(Boolean);
+  return item.photo ? [item.photo] : [];
+}
+function getExecPhotos(er) {
+  if (!er) return [];
+  const arr = Array.isArray(er.execPhotos) ? er.execPhotos.filter(Boolean) : [];
+  if (er.execPhoto && !arr.includes(er.execPhoto)) arr.push(er.execPhoto);
+  return arr;
+}
+function getManagerEvidence(item) {
+  const urls = getManagerPhotos(item);
+  const meta = Array.isArray(item?.photoEvidence) ? item.photoEvidence : [];
+  return urls.map((url, idx) => meta[idx] || ({ url, path: getStoragePathFromPublicUrl(url), uploadedAt: null, uploadedBy: null, uploadedByName: null, stage: 'manager' }));
+}
+function getExecEvidence(er) {
+  const urls = getExecPhotos(er);
+  const meta = Array.isArray(er?.execEvidence) ? er.execEvidence : [];
+  return urls.map((url, idx) => meta[idx] || ({ url, path: getStoragePathFromPublicUrl(url), uploadedAt: null, uploadedBy: null, uploadedByName: null, stage: 'executive' }));
+}
+
+async function uploadPhotoToCloud(dataUrl, inspectionId, itemId, stage='manager') {
+  if (!FNB_CLOUD_READY || !FNB_SB) return { url: dataUrl, path: null };
+  const safeStage = stage === 'executive' ? 'executive' : 'manager';
+  const path = `inspections/${inspectionId}/${itemId}/${safeStage}/${uid()}.jpg`;
   const blob = dataUrlToBlob(dataUrl);
   const { error } = await FNB_SB.storage.from(FNB_CLOUD.photoBucket).upload(path, blob, {
     contentType: 'image/jpeg', cacheControl: '3600', upsert: false
   });
   if (error) throw error;
   const { data } = FNB_SB.storage.from(FNB_CLOUD.photoBucket).getPublicUrl(path);
-  return data.publicUrl;
+  return { url: data.publicUrl, path };
+}
+
+function queuePhotoDeletion(paths) {
+  const clean = Array.from(new Set((paths || []).filter(Boolean)));
+  if (!clean.length) return;
+  try {
+    const key = `${STORAGE_KEY}:photoCleanup`;
+    const old = JSON.parse(localStorage.getItem(key) || '[]');
+    localStorage.setItem(key, JSON.stringify(Array.from(new Set(old.concat(clean))).slice(-5000)));
+  } catch (_) {}
+  setTimeout(() => flushPhotoDeletionQueue(), 300);
+}
+
+async function flushPhotoDeletionQueue() {
+  if (!FNB_CLOUD_READY || !FNB_SB || FNB_PHOTO_CLEANUP_RUNNING) return;
+  FNB_PHOTO_CLEANUP_RUNNING = true;
+  try {
+    const key = `${STORAGE_KEY}:photoCleanup`;
+    const queue = JSON.parse(localStorage.getItem(key) || '[]');
+    if (!Array.isArray(queue) || !queue.length) return;
+    for (let i = 0; i < queue.length; i += 50) {
+      const batch = queue.slice(i, i + 50);
+      const { error } = await FNB_SB.storage.from(FNB_CLOUD.photoBucket).remove(batch);
+      if (error) throw error;
+    }
+    localStorage.removeItem(key);
+  } catch (e) {
+    console.warn('Photo cleanup failed:', e);
+  } finally {
+    FNB_PHOTO_CLEANUP_RUNNING = false;
+  }
+}
+
+function compactExpiredInspectionPhotos() {
+  const days = DATA.settings?.compactDays || 30;
+  const cutoff = Date.now() - days * 86400000;
+  const paths = [];
+  (DATA.inspections || []).forEach(i => {
+    if ((i.completedAt || 0) >= cutoff || !i.items || i._compacted) return;
+    let managerCount = 0, executiveCount = 0;
+    Object.values(i.items).forEach(v => {
+      const mgrEv = getManagerEvidence(v);
+      managerCount += mgrEv.length;
+      mgrEv.forEach(x => { if (x.path) paths.push(x.path); });
+      if (Array.isArray(v.photos)) v.photos = [];
+      if (Array.isArray(v.photoEvidence)) v.photoEvidence = [];
+    });
+    Object.values(i.execReview?.items || {}).forEach(er => {
+      const exEv = getExecEvidence(er);
+      executiveCount += exEv.length;
+      exEv.forEach(x => { if (x.path) paths.push(x.path); });
+      er.execPhotos = [];
+      er.execEvidence = [];
+      er.execPhoto = null;
+    });
+    if (managerCount || executiveCount) {
+      i.photoRetention = {
+        policyDays: days,
+        compactedAt: Date.now(),
+        managerPhotosRemoved: managerCount,
+        executivePhotosRemoved: executiveCount
+      };
+      i._compacted = true;
+      i._compactedAt = Date.now();
+    }
+  });
+  if (paths.length) queuePhotoDeletion(paths);
 }
 
 
@@ -642,19 +749,10 @@ function loadData() {
 let _saveQuotaWarned = false;
 function saveData() {
   try {
-    // Auto-compact if enabled: strip photos from inspections older than settings.compactDays
+    // Auto-compact if enabled: strip inspection evidence photos after the configured retention window.
+    // Metadata, scores, notes, review decisions and photo counts remain for KPI/audit reporting.
     if (DATA.settings?.autoCompact !== false) {
-      const days = DATA.settings?.compactDays || 30;
-      const cutoff = Date.now() - days*86400000;
-      DATA.inspections.forEach(i => {
-        if ((i.completedAt || 0) < cutoff && !i._compacted && i.items) {
-          Object.values(i.items).forEach(v => {
-            if (v.photos?.length > 0) { v.photos = []; }
-          });
-          i._compacted = true;
-          i._compactedAt = Date.now();
-        }
-      });
+      compactExpiredInspectionPhotos();
     }
     const json = JSON.stringify(DATA);
     localStorage.setItem(STORAGE_KEY, json);
@@ -668,13 +766,15 @@ function saveData() {
       try {
         const stripped = JSON.parse(JSON.stringify(DATA));
         stripped.inspections?.forEach(i => {
-          if (i.items) Object.values(i.items).forEach(v => { v.photos = []; });
+          if (i.items) Object.values(i.items).forEach(v => { v.photos = []; v.photoEvidence = []; });
+          if (i.execReview?.items) Object.values(i.execReview.items).forEach(v => { v.execPhotos = []; v.execEvidence = []; v.execPhoto = null; });
           i._compacted = true;
         });
         localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
         // Update actual DATA to match
         DATA.inspections.forEach(i => {
-          if (i.items) Object.values(i.items).forEach(v => { v.photos = []; });
+          if (i.items) Object.values(i.items).forEach(v => { v.photos = []; v.photoEvidence = []; });
+          if (i.execReview?.items) Object.values(i.execReview.items).forEach(v => { v.execPhotos = []; v.execEvidence = []; v.execPhoto = null; });
           i._compacted = true;
         });
         toast('⚠️ พื้นที่เก็บใกล้เต็ม — ลบรูปเก่าให้อัตโนมัติแล้ว · Storage full: photos compacted', 'warn');
@@ -947,11 +1047,6 @@ const ACTIONS = {
   },
   setStatus: (d) => {
     const insp = VIEW_STATE.inspection;
-    if (!insp) return;
-    if (!insp.items || typeof insp.items !== 'object' || Array.isArray(insp.items)) insp.items = {};
-    if (!insp.items[d.itemId] || typeof insp.items[d.itemId] !== 'object') {
-      insp.items[d.itemId] = { status: null, note: '', photos: [] };
-    }
     insp.items[d.itemId].status = d.status;
     autoSave();
     // === Surgical DOM update — ไม่ render หน้าใหม่ = ไม่เด้ง ===
@@ -979,7 +1074,10 @@ const ACTIONS = {
     if (!item) return;
     if (!item.photos) item.photos = [];
     const idx = parseInt(d.photoIdx || '0');
-    item.photos.splice(idx, 1);
+    const removed = item.photos.splice(idx, 1)[0];
+    if (Array.isArray(item.photoEvidence)) item.photoEvidence.splice(idx, 1);
+    const removedPath = getStoragePathFromPublicUrl(removed);
+    if (removedPath) queuePhotoDeletion([removedPath]);
     autoSave();
     render();
   },
@@ -1070,7 +1168,18 @@ const ACTIONS = {
   },
   removeExecPhoto: (d) => {
     const insp = DATA.inspections.find(x => x.id === VIEW_STATE.historyId);
-    if (insp?.execReview?.items?.[d.itemId]) { insp.execReview.items[d.itemId].execPhoto = null; saveData(); render(); }
+    const er = insp?.execReview?.items?.[d.itemId];
+    if (!er) return;
+    const idx = parseInt(d.photoIdx || '0');
+    const photos = getExecPhotos(er);
+    const removed = photos[idx];
+    const next = photos.filter((_,i)=>i!==idx);
+    er.execPhotos = next;
+    er.execPhoto = next[next.length-1] || null;
+    if (Array.isArray(er.execEvidence)) er.execEvidence.splice(idx,1);
+    const removedPath = getStoragePathFromPublicUrl(removed);
+    if (removedPath) queuePhotoDeletion([removedPath]);
+    saveData(); render();
   },
   finishExecReview: () => finishExecReview(),
   dailyPicker: (d) => { VIEW_STATE.dailyDate = d.date || VIEW_STATE.dailyDate; VIEW_STATE.dailyOutlet = d.outletId || VIEW_STATE.dailyOutlet; render(); },
@@ -1459,17 +1568,9 @@ function renderInspection() {
     }));
   }
   const insp = VIEW_STATE.inspection;
-  // Defensive migration: old/cloud inspections may contain items:null or malformed values.
-  // Always normalize the editable structure before any click/input handler touches it.
-  if (!insp.items || typeof insp.items !== 'object' || Array.isArray(insp.items)) insp.items = {};
-  if (!Array.isArray(insp.tables)) insp.tables = [];
-  if (!insp.activeTab || !checklists.some(c => c.id === insp.activeTab)) insp.activeTab = checklists[0]?.id || null;
-  checklists.forEach(cl => (Array.isArray(cl.items) ? cl.items : []).forEach(it => {
-    if (!insp.items[it.id] || typeof insp.items[it.id] !== 'object') insp.items[it.id] = { status: null, note: '', photos: [] };
-    const v = insp.items[it.id];
-    if (!Array.isArray(v.photos)) v.photos = v.photo ? [v.photo] : [];
-    if (v.photo !== undefined) delete v.photo;
-  }));
+  // Ensure items array structure has photos array (migrate old ones)
+  Object.values(insp.items).forEach(v => { if (!v.photos) v.photos = v.photo ? [v.photo] : []; if (v.photo !== undefined) delete v.photo; });
+  if (!insp.tables) insp.tables = [];
   const activeCl = checklists.find(c => c.id === insp.activeTab) || checklists[0];
   const totals = calcInspectionProgress(insp);
   const isEditingSaved = insp.status === 'done';
@@ -1757,6 +1858,7 @@ async function attachPhoto(ev, itemId) {
   if (!files.length) return;
   const item = VIEW_STATE.inspection.items[itemId];
   if (!item.photos) item.photos = [];
+  if (!item.photoEvidence) item.photoEvidence = [];
   let done = 0;
   let failed = 0;
   for (const file of files) {
@@ -1765,8 +1867,12 @@ async function attachPhoto(ev, itemId) {
         compressImage(file, resolve);
         setTimeout(() => reject(new Error('รูปใช้เวลานานเกินไป')), 30000);
       });
-      const finalUrl = await uploadPhotoToCloud(dataUrl, VIEW_STATE.inspection.id, itemId);
-      item.photos.push(finalUrl);
+      const asset = await uploadPhotoToCloud(dataUrl, VIEW_STATE.inspection.id, itemId, 'manager');
+      item.photos.push(asset.url);
+      item.photoEvidence.push({
+        url: asset.url, path: asset.path, stage: 'manager', uploadedAt: Date.now(),
+        uploadedBy: SESSION.user.id, uploadedByName: SESSION.user.name
+      });
       done++;
     } catch (e) {
       failed++;
@@ -1775,24 +1881,46 @@ async function attachPhoto(ev, itemId) {
   }
   autoSave();
   render();
-  if (done) toast(`แนบรูปแล้ว ${done} รูป · ${failed ? `ล้มเหลว ${failed}` : 'Cloud synced'}`);
+  if (done) toast(`แนบหลักฐาน Manager แล้ว ${done} รูป · ${failed ? `ล้มเหลว ${failed}` : 'Cloud synced'}`);
   else toast('แนบรูปไม่สำเร็จ', 'warn');
   ev.target.value = '';
 }
 async function attachExecPhoto(ev, itemId) {
-  const file = ev.target.files[0]; if (!file) return;
+  const files = Array.from(ev.target.files || []);
+  if (!files.length) return;
+  const insp = DATA.inspections.find(x => x.id === VIEW_STATE.historyId);
+  if (!insp) return;
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      compressImage(file, resolve);
-      setTimeout(() => reject(new Error('รูปใช้เวลานานเกินไป')), 30000);
-    });
-    const finalUrl = await uploadPhotoToCloud(dataUrl, VIEW_STATE.historyId, itemId);
-    const insp = DATA.inspections.find(x => x.id === VIEW_STATE.historyId);
     if (!insp.execReview) insp.execReview = { items: {} };
     if (!insp.execReview.items) insp.execReview.items = {};
     if (!insp.execReview.items[itemId]) insp.execReview.items[itemId] = {};
-    insp.execReview.items[itemId].execPhoto = finalUrl;
-    saveData(); render(); toast('แนบหลักฐานแล้ว · Cloud synced');
+    const er = insp.execReview.items[itemId];
+    if (!Array.isArray(er.execPhotos)) er.execPhotos = getExecPhotos(er);
+    if (!Array.isArray(er.execEvidence)) er.execEvidence = [];
+    let done = 0;
+    let failed = 0;
+    for (const file of files) {
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          compressImage(file, resolve);
+          setTimeout(() => reject(new Error('รูปใช้เวลานานเกินไป')), 30000);
+        });
+        const asset = await uploadPhotoToCloud(dataUrl, VIEW_STATE.historyId, itemId, 'executive');
+        er.execPhotos.push(asset.url);
+        er.execEvidence.push({
+          url: asset.url, path: asset.path, stage: 'executive', uploadedAt: Date.now(),
+          uploadedBy: SESSION.user.id, uploadedByName: SESSION.user.name
+        });
+        er.execPhoto = asset.url;
+        done++;
+      } catch (e) {
+        failed++;
+        console.error('Executive photo upload failed', e);
+      }
+    }
+    saveData(); render();
+    if (done) toast(`แนบหลักฐาน Executive แล้ว ${done} รูป${failed ? ` · ล้มเหลว ${failed}` : ''}`);
+    else toast('แนบรูปไม่สำเร็จ', 'warn');
   } catch (e) {
     console.error('Executive photo upload failed', e);
     toast(`แนบรูปไม่สำเร็จ · ${e.message || e}`, 'warn');
@@ -2814,22 +2942,23 @@ function renderExecReview() {
               <span class="badge ${mgrCfg.c} shrink-0">Manager: ${mgrCfg.ic} ${mgrCfg.l}</span>
             </div>
             ${mgr.note?`<div class="text-xs mb-2 p-2 rounded" style="color:#5c5138;background:#faf5e8">💬 หมายเหตุ manager: ${mgr.note}</div>`:''}
-            ${mgr.photo?`<div class="mb-2"><div class="text-xs mb-1" style="color:#5c5138">📷 หลักฐาน manager:</div><img src="${mgr.photo}" style="height:80px;border-radius:8px;border:1px solid #ecdcb7"></div>`:''}
+            ${getManagerEvidence(mgr).length ? `<div class="mb-3"><div class="text-xs mb-1" style="color:#5c5138;font-weight:600">📷 หลักฐานรอบ Manager · ${getManagerEvidence(mgr).length} รูป</div><div class="flex gap-2 flex-wrap">${getManagerEvidence(mgr).map((x,mi)=>`<div class="text-center"><img src="${x.url}" style="height:92px;width:92px;object-fit:cover;border-radius:10px;border:1px solid #ecdcb7;display:block"><div class="text-[10px] mt-1" style="color:#8b6820">${x.uploadedAt?new Date(x.uploadedAt).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}):'หลักฐานเดิม'}</div></div>`).join('')}</div></div>`:''}
             <div class="status-buttons mb-2">
               <button data-action="setExecItem" data-item-id="${it.id}" data-value="true" class="status-btn ${er.agree===true?'active-pass':''}"><span class="icon">✓</span> ตรง</button>
               <button data-action="setExecItem" data-item-id="${it.id}" data-value="false" class="status-btn ${er.agree===false?'active-fail':''}"><span class="icon">✕</span> ไม่ตรง</button>
             </div>
-            ${er.agree===false || er.execNote || er.execPhoto ? `
+            ${er.agree===false || er.execNote || getExecPhotos(er).length ? `
             <div class="pt-2 mt-2" style="border-top:1px dashed #d0b8db;background:#faf5ff;padding:10px;border-radius:10px">
-              <div class="text-xs mb-2" style="color:#6b47a3;font-weight:600">🔍 บันทึกของ Exec</div>
+              <div class="text-xs mb-2" style="color:#6b47a3;font-weight:600">🔍 หลักฐานตรวจซ้ำของ Executive · ${getExecPhotos(er).length} รูป</div>
               <div class="flex gap-2 mb-2 flex-wrap">
                 <input type="text" data-field="exec-note" data-item-id="${it.id}" placeholder="หมายเหตุการตรวจซ้ำ..." value="${(er.execNote||'').replace(/"/g,'&quot;')}" class="flex-1" style="min-width:0;background:white">
                 <label class="btn-secondary cursor-pointer whitespace-nowrap flex items-center gap-1" style="padding:10px 14px">
-                  📷 ${er.execPhoto?'เปลี่ยน':'แนบหลักฐาน'}
-                  <input type="file" accept="image/*" capture="environment" data-exec-photo data-item-id="${it.id}" style="display:none">
+                  📷 แนบเพิ่ม
+                  <input type="file" accept="image/*" multiple capture="environment" data-exec-photo data-item-id="${it.id}" style="display:none">
                 </label>
               </div>
-              ${er.execPhoto ? `<div class="relative inline-block mt-1"><img src="${er.execPhoto}" style="height:80px;border-radius:8px;border:1px solid #d0b8db"><button data-action="removeExecPhoto" data-item-id="${it.id}" style="position:absolute;top:-8px;right:-8px;width:26px;height:26px;background:#dc2626;color:white;border:0;border-radius:50%;cursor:pointer;font-size:12px">✕</button></div>` : ''}
+              ${getExecPhotos(er).length ? `<div class="flex gap-2 flex-wrap">${getExecPhotos(er).map((p,pi)=>`<div class="relative inline-block"><img src="${p}" style="height:92px;width:92px;object-fit:cover;border-radius:10px;border:1px solid #d0b8db;display:block"><button data-action="removeExecPhoto" data-item-id="${it.id}" data-photo-idx="${pi}" style="position:absolute;top:-8px;right:-8px;width:26px;height:26px;background:#dc2626;color:white;border:0;border-radius:50%;cursor:pointer;font-size:12px">✕</button></div>`).join('')}</div>` : ''}
+              ${er.agree===false && !er.execNote && !getExecPhotos(er).length ? `<div class="text-[10px] mt-2" style="color:#a52d33">⚠️ กรณี “ไม่ตรง” ต้องใส่เหตุผลหรือแนบภาพอย่างน้อย 1 รายการ</div>` : ''}
             </div>`:''}
           </div>`;
         }).join('')}
@@ -2861,6 +2990,17 @@ function finishExecReview() {
     }
   }));
   if (checked === 0) { toast('กรุณาตรวจซ้ำอย่างน้อย 1 หัวข้อ', 'warn'); return; }
+  const missingEvidence = [];
+  cls.forEach(cl => cl.items.forEach(it => {
+    if (insp.items[it.id]?.status && insp.execReview?.items?.[it.id]?.agree === false) {
+      const er = insp.execReview.items[it.id];
+      if (!String(er.execNote || '').trim() && !getExecPhotos(er).length) missingEvidence.push(it.text);
+    }
+  }));
+  if (missingEvidence.length) {
+    toast(`ยังไม่ครบหลักฐาน “ไม่ตรง” ${missingEvidence.length} หัวข้อ · ต้องใส่เหตุผลหรือรูป`, 'warn');
+    return;
+  }
   const matchRate = checked ? Math.round(agreed/checked*100) : 0;
   const overallStatus = matchRate >= 80 ? 'verified' : 'rejected';
   insp.execReview = {
@@ -3329,6 +3469,17 @@ function renderKPI() {
       <button data-action="printReport" class="btn-primary" style="padding:12px 24px">🖨️ พิมพ์ PDF · Print Report</button>
     </div>
     <div class="gold-line-short mt-4 mb-5 no-print"></div>
+    <div class="card p-3 mb-5 no-print" style="background:linear-gradient(135deg,#fefdfa,#faf5e8);border-color:#ecdcb7">
+      <div class="flex items-start gap-2">
+        <div class="text-lg">🔒</div>
+        <div class="text-xs" style="color:#5c5138;line-height:1.7">
+          <b style="color:#8b6820">Data Separation:</b>
+          ผล Load / Concurrency Test เป็นประวัติการทดสอบระบบเท่านั้น ไม่ถูกนับรวมใน KPI, Inspection หรือ Complaint จริง
+          · ลบข้อมูล LOADTEST จาก Supabase ได้โดยไม่ทำให้ประวัติสรุปด้านล่างหาย
+        </div>
+      </div>
+    </div>
+
     <!-- Executive Summary -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
       <div class="card p-4"><div class="text-xs font-semibold" style="color:#5c5138;letter-spacing:0.05em">📝 ตรวจทั้งหมด · Total</div><div class="text-3xl font-bold mt-1" style="color:#1a1611">${insps.length}</div></div>
@@ -3426,6 +3577,13 @@ function renderKPI() {
         <div><div>Inspector Performance</div><div class="text-xs" style="color:#5c5138;font-weight:400">ผู้ทำรายงาน / ผู้ตรวจซ้ำ · Inspector & Executive Reviewer</div></div>
       </div>
       ${renderInspectorKPI()}
+    </div>
+
+    <!-- Manager Pass → Executive Fail Evidence KPI -->
+    <div class="card p-5 mb-4 print-no-break" style="background:linear-gradient(135deg,#fffafa,#faf5ff);border-color:#e7cfe4">
+      <div class="font-semibold mb-1" style="color:#5b21b6">🎯 Manager PASS → Executive ไม่ผ่าน · Evidence KPI</div>
+      <div class="text-xs mb-4" style="color:#5c5138">เปรียบเทียบหลักฐานการตรวจรอบแรกกับการตรวจซ้ำ เพื่อดูว่าห้องอาหาร/หัวข้อใดที่ Manager ระบุว่า “ผ่าน” แต่ Executive พบว่าไม่ตรง</div>
+      ${renderManagerPassExecFailAnalysis()}
     </div>
 
     <!-- Verification Analysis -->
@@ -3604,6 +3762,77 @@ function renderInspectorKPI() {
       </div>`;
     }).join('')}
   </div>`;
+}
+
+function getManagerPassExecFailCases() {
+  const out = [];
+  (DATA.inspections || []).filter(i => i.status === 'done').forEach(insp => {
+    const hotel = (DATA.hotels || []).find(h => (h.outlets || []).some(o => o.id === insp.outletId));
+    const outlet = hotel?.outlets?.find(o => o.id === insp.outletId);
+    const cls = getChecklistForOutlet(insp.outletId);
+    cls.forEach(cl => cl.items.forEach(it => {
+      const mgr = insp.items?.[it.id];
+      const er = insp.execReview?.items?.[it.id];
+      if (mgr?.status === 'pass' && er?.agree === false) {
+        out.push({
+          insp, hotel, outlet, category: cl, item: it, mgr, er,
+          managerPhotos: getManagerEvidence(mgr), execPhotos: getExecEvidence(er)
+        });
+      }
+    }));
+  });
+  return out.sort((a,b) => ((b.er?.reviewedAt || b.insp.execReview?.reviewedAt || 0) - (a.er?.reviewedAt || a.insp.execReview?.reviewedAt || 0)));
+}
+
+function renderEvidenceImgs(list, borderColor='#ecdcb7', label='') {
+  if (!list.length) return `<div class="text-[11px] py-3 px-3 rounded-lg" style="background:#f7f4ec;color:#8b6820">${label || 'ไม่มีภาพหลักฐาน'}</div>`;
+  return `<div class="flex gap-2 flex-wrap">${list.map(x => `<a href="${x.url}" target="_blank" rel="noopener" title="เปิดภาพต้นฉบับ"><img src="${x.url}" style="width:110px;height:82px;object-fit:cover;border-radius:10px;border:1px solid ${borderColor};display:block"></a>`).join('')}</div>`;
+}
+
+function renderManagerPassExecFailAnalysis() {
+  const cases = getManagerPassExecFailCases();
+  const reviewedPass = [];
+  const evidenceComplete = [];
+  const outletStats = {};
+  (DATA.inspections || []).filter(i => i.status === 'done').forEach(insp => {
+    const outlet = DATA.hotels.flatMap(h => h.outlets.map(o=>({...o,hotel:h}))).find(o=>o.id===insp.outletId);
+    getChecklistForOutlet(insp.outletId).forEach(cl => cl.items.forEach(it => {
+      const mgr = insp.items?.[it.id];
+      const er = insp.execReview?.items?.[it.id];
+      if (mgr?.status === 'pass' && er && typeof er.agree === 'boolean') {
+        reviewedPass.push(1);
+        if (er.agree === false && (getManagerEvidence(mgr).length || getExecEvidence(er).length)) evidenceComplete.push(1);
+        const key = insp.outletId;
+        if (!outletStats[key]) outletStats[key] = { name: outlet?.name || insp.outletId, floor: outlet?.floor || '', hotel: outlet?.hotel?.name || '', reviewed:0, mismatch:0 };
+        outletStats[key].reviewed++;
+        if (er.agree === false) outletStats[key].mismatch++;
+      }
+    }));
+  });
+  const mismatchRate = reviewedPass.length ? Math.round(cases.length/reviewedPass.length*100) : 0;
+  const evidenceRate = cases.length ? Math.round(evidenceComplete.length/cases.length*100) : 0;
+  const outletList = Object.values(outletStats).filter(x=>x.mismatch>0).sort((a,b)=>b.mismatch-a.mismatch);
+  return `
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+    <div class="rounded-xl p-3 text-center" style="background:#f0fdf4"><div class="text-2xl font-bold" style="color:#166534">${reviewedPass.length}</div><div class="text-[11px]" style="color:#166534">Manager PASS ที่ตรวจซ้ำ</div></div>
+    <div class="rounded-xl p-3 text-center" style="background:#fee2e2"><div class="text-2xl font-bold" style="color:#a52d33">${cases.length}</div><div class="text-[11px]" style="color:#a52d33">PASS → Exec ไม่ตรง</div></div>
+    <div class="rounded-xl p-3 text-center" style="background:#fff7ed"><div class="text-2xl font-bold" style="color:#c2410c">${mismatchRate}%</div><div class="text-[11px]" style="color:#c2410c">Mismatch Rate</div></div>
+    <div class="rounded-xl p-3 text-center" style="background:#faf5e8"><div class="text-2xl font-bold" style="color:#8b6820">${evidenceRate}%</div><div class="text-[11px]" style="color:#8b6820">Mismatch มีหลักฐาน</div></div>
+  </div>
+  ${outletList.length ? `<div class="mb-4"><div class="text-xs font-semibold mb-2" style="color:#a52d33">🏨 ห้องอาหารที่พบ Manager PASS → Executive ไม่ตรง</div>${outletList.slice(0,8).map(x=>`<div class="flex items-center gap-2 py-2" style="border-top:1px solid #f2e6c8"><div class="w-8 h-8 rounded-lg flex items-center justify-center font-bold" style="background:#fee2e2;color:#a52d33">${x.mismatch}</div><div class="flex-1 min-w-0"><div class="text-sm font-semibold truncate" style="color:#1a1611">${x.name}</div><div class="text-[10px]" style="color:#5c5138">${x.hotel} · ${x.floor} · ${x.reviewed} Manager PASS ที่ตรวจซ้ำ</div></div><div class="text-xs font-bold" style="color:#a52d33">${Math.round(x.mismatch/x.reviewed*100)}%</div></div>`).join('')}</div>` : ''}
+  ${cases.length ? `<div class="space-y-3">${cases.slice(0,20).map((c,idx)=>`
+    <div class="rounded-2xl p-4 print-no-break" style="background:linear-gradient(135deg,#fffafa,#faf5ff);border:1px solid #efdada">
+      <div class="flex items-start justify-between gap-3 flex-wrap mb-3">
+        <div class="flex-1 min-w-0"><div class="text-xs font-bold" style="color:#a52d33">CASE #${idx+1} · ${c.outlet?.name || c.insp.outletId}</div><div class="font-semibold" style="color:#1a1611">${c.item.text}</div><div class="text-[10px] mt-1" style="color:#5c5138">${c.category.icon} ${c.category.name} · ${c.insp.date} ${c.insp.time} · ${c.hotel?.name || ''}</div></div>
+        <div class="flex gap-2"><span class="badge badge-mint">Manager ✓ ผ่าน</span><span class="badge badge-red">Exec ✕ ไม่ตรง</span></div>
+      </div>
+      <div class="grid lg:grid-cols-2 gap-3">
+        <div class="rounded-xl p-3" style="background:#f7fbf8;border:1px solid #cfe9d7"><div class="text-xs font-semibold mb-2" style="color:#166534">📷 หลักฐานรอบ Manager · ${c.insp.inspectorName || '-'}${c.insp.responsibleName ? ` · Manager: ${c.insp.responsibleName}`:''}</div>${renderEvidenceImgs(c.managerPhotos,'#b8ddc2','ไม่มีภาพ Manager')}${c.mgr.note?`<div class="text-xs mt-2" style="color:#166534"><b>Note:</b> ${c.mgr.note}</div>`:''}<div class="text-[10px] mt-2" style="color:#5c5138">ตรวจเดิม: ${c.insp.date} ${c.insp.time}</div></div>
+        <div class="rounded-xl p-3" style="background:#fbf7ff;border:1px solid #dccaf0"><div class="text-xs font-semibold mb-2" style="color:#6b47a3">🔍 หลักฐานตรวจซ้ำ Executive · ${c.er?.uploadedByName || c.insp.execReview?.reviewerName || '-'}</div>${renderEvidenceImgs(c.execPhotos,'#d0b8db','ไม่มีภาพ Executive')}${c.er.execNote?`<div class="text-xs mt-2" style="color:#6b47a3"><b>เหตุผล/Note:</b> ${c.er.execNote}</div>`:''}<div class="text-[10px] mt-2" style="color:#5c5138">ตรวจซ้ำ: ${c.insp.execReview?.reviewedAt ? new Date(c.insp.execReview.reviewedAt).toLocaleString('th-TH') : '-'}</div></div>
+      </div>
+      <div class="mt-3 text-[10px]" style="color:#8b6820">📌 ใช้เป็นหลักฐาน KPI: Manager PASS → Executive พบไม่ตรง · รูปเดิมและรูปตรวจซ้ำถูกจัดเก็บแยกชุด</div>
+    </div>`).join('')}</div>` : `<div class="text-sm text-center py-5" style="color:#5c5138">✅ ยังไม่พบกรณี Manager PASS → Executive ไม่ตรง จากข้อมูลที่ตรวจซ้ำแล้ว</div>`}
+  ${cases.length>20 ? `<div class="text-[11px] mt-3" style="color:#8b6820">แสดง 20 เคสล่าสุดจากทั้งหมด ${cases.length} เคส · KPI นับทั้งหมด</div>` : ''}`;
 }
 
 function renderVerifyAnalysis() {
@@ -4458,7 +4687,7 @@ function renderAdminData() {
         <div>
           <div class="font-semibold text-sm" style="color:#1a1611">🗜️ Auto-compact อัตโนมัติ (แนะนำ · Recommended)</div>
           <div class="text-xs mt-1" style="color:#5c5138">
-            หลัง ${s.compactDays||30} วัน จะลบเฉพาะรูปภาพออก (metadata + คะแนน + note + tables คงอยู่)<br>
+            หลัง ${s.compactDays||30} วัน จะลบเฉพาะรูป Manager + Executive ออกจาก Storage (metadata + คะแนน + note + KPI ยังคงอยู่)<br>
             = <b style="color:#166534">เก็บข้อมูลได้เป็นปี ๆ</b> · ไม่กระทบการวิเคราะห์ · เรียกดูรายงานย้อนหลังได้ครบ
           </div>
           ${compactedCount > 0 ? `<div class="text-xs mt-2" style="color:#8b6820;font-weight:600">✓ ประหยัดพื้นที่แล้ว ${compactedCount} รายการ · ${compactedCount} inspections compacted</div>` : ''}
@@ -4468,7 +4697,7 @@ function renderAdminData() {
     <div class="rounded-xl p-3" style="background:#fef3c7;border:1px solid #fde68a">
       <div class="text-xs" style="color:#92400e;font-weight:600">💡 คำแนะนำ · Tip</div>
       <div class="text-xs" style="color:#78350f;margin-top:4px">
-        เปิด Auto-compact ไว้เพื่อเก็บข้อมูลได้ 3+ ปี · รูปภาพเดิม export ออกก่อนถ้าต้องเก็บไว้
+        เปิด Auto-compact ไว้เพื่อเก็บข้อมูลได้ 3+ ปี · ภาพหลักฐานเดิมจะถูกลบออกจาก Storage ตามรอบ retention เพื่อควบคุมพื้นที่
       </div>
     </div>
   </div>
@@ -4525,19 +4754,13 @@ function clearOldInspections() {
 function compactNow() {
   const days = DATA.settings?.compactDays || 30;
   const cutoff = Date.now() - days*86400000;
-  let compactedNow = 0;
-  DATA.inspections.forEach(i => {
-    if ((i.completedAt || 0) < cutoff && i.items) {
-      let hadPhotos = false;
-      Object.values(i.items).forEach(v => {
-        if (v.photos?.length > 0) { v.photos = []; hadPhotos = true; }
-      });
-      if (hadPhotos) { i._compacted = true; i._compactedAt = Date.now(); compactedNow++; }
-    }
-  });
+  const before = DATA.inspections.filter(i => i._compacted).length;
+  compactExpiredInspectionPhotos();
+  const after = DATA.inspections.filter(i => i._compacted).length;
   saveData(); render();
-  if (compactedNow > 0) toast(`🗜️ Compact แล้ว ${compactedNow} รายการ ประหยัดพื้นที่`);
-  else toast('ไม่มีข้อมูลที่ต้อง compact · Nothing to compact');
+  const compactedNow = Math.max(0, after - before);
+  if (compactedNow > 0) toast(`🗜️ Compact แล้ว ${compactedNow} รายการ · ลบหลักฐานรูปเก่าตามนโยบาย ${days} วัน`);
+  else toast('ไม่มีรูปเก่าที่ต้อง compact · Nothing to compact');
 }
 
 function exportData() {
@@ -4608,6 +4831,6 @@ function getGlobalStats() {
 }
 
 // INIT
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { render(); initCloud(); });
-else { render(); initCloud(); }
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { render(); initCloud(); setTimeout(() => flushPhotoDeletionQueue(), 1800); });
+else { render(); initCloud(); setTimeout(() => flushPhotoDeletionQueue(), 1800); }
 </script>
