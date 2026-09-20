@@ -1,6 +1,18 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
-<meta name="app-build" content="2026-09-20-photo-evidence-kpi-final-input-fix">
+<meta name="app-build" content="2026-09-20-mobile-concurrency-fix">
+<meta name="theme-color" content="#b8892f">
+<meta name="format-detection" content="telephone=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="F&B Standards">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23b8892f'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='%23fff'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' fill='%23b8892f'/%3E%3Ctext x='90' y='122' font-size='96' text-anchor='middle' fill='%23fff'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -41,7 +53,48 @@
     .login-page h1 { font-size: 2.8rem !important; }
     .login-page .text-3xl { font-size: 1.65rem !important; }
     .bottom-bar { padding-left: 10px; padding-right: 10px; }
+
+    /* ---- MOBILE FIX 1: แถบแท็บให้ขึ้นบรรทัดใหม่แทนการเลื่อนซ่อน ----
+       เดิมแท็บหมวดตรวจยาวเกินจอ (ถึง 670px บนจอ 390px) และ scrollbar ถูกซ่อน
+       ทำให้ผู้ตรวจไม่เห็นว่ามีหมวดอื่นอยู่ทางขวา จึงตรวจไม่ครบ */
+    [data-scroll-key] { flex-wrap: wrap !important; overflow-x: visible !important; }
+    [data-scroll-key] > * { min-width: 0 !important; flex: 1 1 auto !important; }
+    [data-scroll-key] > .tab-btn { flex: 1 1 30% !important; white-space: normal !important; line-height: 1.25; }
+    .tab-btn { white-space: normal !important; min-height: 44px; }
+    /* ปุ่มไอคอนเล็ก ๆ (ลบ/ปิด) ให้แตะโดนง่าย */
+    button[data-action^="del"], button[data-action^="remove"], button[data-action^="Del"] {
+      min-width: 44px; min-height: 44px; }
+    .flex.overflow-x-auto:not([data-scroll-key]) { flex-wrap: wrap; overflow-x: visible; }
+
+    /* ---- MOBILE FIX 2: ปุ่มเมนูบนให้แตะง่าย (มาตรฐาน 44px) ---- */
+    .app-header .nav-btn { padding: 0 10px !important; font-size: 12px; min-height: 44px; min-width: 44px;
+      display: inline-flex; align-items: center; justify-content: center; }
+    .app-header .max-w-6xl { gap: 6px; }
+
+    /* ---- MOBILE FIX 3: ช่องกรอกต้อง >= 16px ไม่งั้น iPhone ซูมเข้าเองทุกครั้ง ---- */
+    input, select, textarea { font-size: 16px !important; }
+
+    /* ป้ายสถานะบนมือถือ: ปกติโชว์แค่จุด ประหยัดที่ — จะขยายเป็นข้อความเมื่อออฟไลน์ */
+    .conn-chip { padding: 6px 8px; min-height: 32px; }
+    .conn-chip.on .conn-label, .conn-chip.wait .conn-label { display: none; }
+    .conn-chip.has-pending .conn-label { display: inline !important; }
+
+    /* ---- MOBILE FIX 4: แจ้งเตือนไปอยู่ด้านล่าง ไม่ทับแถบเมนู ---- */
+    .toast { top: auto !important; bottom: calc(84px + env(safe-area-inset-bottom, 0px)) !important;
+      max-width: calc(100vw - 28px); text-align: center; }
   }
+  /* กันหน้าล้นออกข้างจากข้อความยาว ๆ (เช่น หน้ารายงาน KPI ล้น 6px) */
+  .card, .luxe-card, .tab-btn, h1, h2, h3, p, div { overflow-wrap: anywhere; }
+  /* แถบสถานะการเชื่อมต่อ */
+  .conn-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; white-space: nowrap; border: 1px solid transparent; }
+  .conn-chip.on { background: var(--mint-tint); color: #12803c; border-color: #a7e8c0; }
+  .conn-chip.off { background: var(--red-tint); color: #b91c1c; border-color: #f5b5b5; }
+  .conn-chip.wait { background: var(--amber-tint); color: #b45309; border-color: #f1d28a; }
+  .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .photo-pending { position: relative; }
+  .photo-pending::after { content: '⏳ รอส่ง'; position: absolute; left: 0; right: 0; bottom: 0;
+    background: rgba(217,119,6,0.92); color: #fff; font-size: 9px; text-align: center; padding: 1px 0; }
   .display-font { font-family: 'Playfair Display', serif; }
   .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 18px; box-shadow: var(--card-shadow); }
   .card-hover { transition: all 0.3s cubic-bezier(0.4,0,0.2,1); cursor: pointer; }
@@ -94,7 +147,7 @@
   .tab-btn { padding: 12px 16px; border-radius: 10px; border: 0; background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; transition: all 0.15s; font-weight: 500; white-space: nowrap; }
   .tab-btn:hover { background: var(--gold-tint); color: var(--gold-dark); }
   .tab-btn.active { background: linear-gradient(135deg, #f2e6c8, #faf5e8); color: var(--gold-dark); font-weight: 600; box-shadow: 0 2px 8px rgba(184,137,47,0.15); }
-  .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg, #34c759, #16a34a); color: white; padding: 12px 24px; border-radius: 999px; box-shadow: 0 10px 30px rgba(22,163,74,0.35); z-index: 100; font-weight: 600; font-size: 14px; animation: toastIn 0.3s ease-out, toastOut 0.3s ease-in 2s forwards; display: flex; align-items: center; gap: 8px; max-width: 90vw; }
+  .toast { position: fixed; top: 78px; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg, #34c759, #16a34a); color: white; padding: 12px 24px; border-radius: 999px; box-shadow: 0 10px 30px rgba(22,163,74,0.35); z-index: 100; font-weight: 600; font-size: 14px; animation: toastIn 0.3s ease-out, toastOut 0.3s ease-in 2s forwards; display: flex; align-items: center; gap: 8px; max-width: 90vw; }
   @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(-20px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
   @keyframes toastOut { to { opacity: 0; transform: translateX(-50%) translateY(-20px); } }
   .login-page { background: linear-gradient(135deg, #ffffff 0%, #faf5e8 50%, #f2e6c8 100%); position: relative; overflow: hidden; min-height: 100vh; }
@@ -210,6 +263,8 @@
   .print-signature { border-top: 1px solid #8b6820; margin-top: 40px; padding-top: 8px; text-align: center; font-size: 11px; color: #5c5138; }
 </style>
 
+</head>
+<body>
 <div id="app"></div>
 <div id="toast-root"></div>
 <div id="modal-root"></div>
@@ -240,11 +295,32 @@ let FNB_CLOUD_READY = false;
 let FNB_CLOUD_TIMER = null;
 let FNB_PHOTO_CLEANUP_RUNNING = false;
 let FNB_CLOUD_SYNCING = false;
-let FNB_CLOUD_CACHE = { config: null, inspections: new Map(), complaints: new Map() };
+let FNB_CLOUD_CACHE = { config: {}, inspections: new Map(), complaints: new Map() };
 let FNB_CLOUD_TOASTED = false;
+// สถานะการเชื่อมต่อที่โชว์บนหัวเว็บ: 'connecting' | 'online' | 'offline' | 'local'
+let FNB_CONN = { state: 'connecting', lastSyncAt: 0, pendingPhotos: 0, lastError: '' };
+
+// config ถูกแยกเป็นหลายแถว เพื่อไม่ให้แอดมินสองคนแก้คนละเรื่องแล้วทับกัน
+const CONFIG_SECTIONS = ['hotels', 'shifts', 'checklists', 'outletChecklists', 'settings'];
 
 function cloudConfigured() {
   return !!(window.supabase && FNB_CLOUD.url && FNB_CLOUD.key && !FNB_CLOUD.key.startsWith('PASTE_'));
+}
+function configSectionValue(name) {
+  if (name === 'hotels') return DATA.hotels;
+  if (name === 'shifts') return DATA.shifts;
+  if (name === 'checklists') return DATA.checklists;
+  if (name === 'outletChecklists') return DATA.outletChecklists || {};
+  if (name === 'settings') return DATA.settings || { autoCompact: true, compactDays: 30 };
+  return null;
+}
+function applyConfigSection(name, value) {
+  if (value === null || value === undefined) return;
+  if (name === 'hotels' && Array.isArray(value)) DATA.hotels = value;
+  else if (name === 'shifts' && Array.isArray(value)) DATA.shifts = value;
+  else if (name === 'checklists' && typeof value === 'object') DATA.checklists = value;
+  else if (name === 'outletChecklists' && typeof value === 'object') DATA.outletChecklists = value;
+  else if (name === 'settings' && typeof value === 'object') DATA.settings = value;
 }
 function cloudConfigPayload() {
   return {
@@ -272,42 +348,112 @@ function jsonStable(v) {
   };
   try { return JSON.stringify(canonicalize(v)); } catch (_) { return ''; }
 }
+function setConn(state, err = '') {
+  if (FNB_CONN.state === state && FNB_CONN.lastError === err) return;
+  FNB_CONN.state = state;
+  FNB_CONN.lastError = err;
+  paintConnChip();
+}
+// วาดเฉพาะป้ายสถานะ ไม่ render ทั้งหน้า (กันหน้ากระพริบ/ช่องพิมพ์หลุด)
+function paintConnChip() {
+  const el = document.getElementById('conn-chip');
+  if (!el) return;
+  const s = FNB_CONN.state;
+  const pend = FNB_CONN.pendingPhotos;
+  const map = {
+    connecting: ['wait', '⏳', 'กำลังเชื่อมต่อ'],
+    online: ['on', '', 'ออนไลน์'],
+    offline: ['off', '', 'ออฟไลน์ · เก็บในเครื่อง'],
+    local: ['off', '', 'ยังไม่ต่อ Cloud']
+  };
+  const [cls, icon, label] = map[s] || map.connecting;
+  el.className = 'conn-chip ' + cls;
+  el.title = FNB_CONN.lastError || label;
+  el.innerHTML = `${icon ? icon : '<span class="conn-dot"></span>'}<span class="conn-label">${label}${pend ? ` · ${pend} รูปรอส่ง` : ''}</span>`;
+  if (pend) el.classList.add('has-pending');
+}
+
+// ยิงซ้ำแบบถอยหลังทีละขั้น + สุ่มเวลา กันกรณี 100 เครื่องเข้าพร้อมกันแล้วชน auth
+async function withRetry(fn, tries = 4, label = '') {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); }
+    catch (e) {
+      lastErr = e;
+      if (i === tries - 1) break;
+      const wait = Math.round((400 * Math.pow(2, i)) + Math.random() * 900);
+      console.warn(`retry ${label} #${i + 1} in ${wait}ms:`, e?.message || e);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  throw lastErr;
+}
+
 async function initCloud() {
   if (!cloudConfigured()) {
     console.warn('F&B Cloud not configured: add the Supabase publishable/anon key to FNB_CLOUD.key');
+    setConn('local');
     return;
   }
+  setConn('connecting');
   try {
-    FNB_SB = window.supabase.createClient(FNB_CLOUD.url, FNB_CLOUD.key, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
-    });
+    if (!FNB_SB) {
+      FNB_SB = window.supabase.createClient(FNB_CLOUD.url, FNB_CLOUD.key, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+        realtime: { params: { eventsPerSecond: 4 } }
+      });
+    }
 
     let { data: sessionData, error: sessionError } = await FNB_SB.auth.getSession();
     if (sessionError) console.warn('getSession:', sessionError.message);
     if (!sessionData?.session) {
-      const anon = await FNB_SB.auth.signInAnonymously();
-      if (anon.error) throw anon.error;
+      await withRetry(async () => {
+        const anon = await FNB_SB.auth.signInAnonymously();
+        if (anon.error) throw anon.error;
+        return anon;
+      }, 4, 'signInAnonymously');
     }
 
+    // สำคัญ: ต้องโหลดข้อมูลจาก cloud ให้สำเร็จ "ก่อน" จึงจะอนุญาตให้เขียนขึ้น cloud
+    // ไม่งั้นเครื่องที่โหลดพลาดจะเอาข้อมูลเก่าในเครื่องไปทับของจริงบน cloud
+    await withRetry(() => cloudLoadStateRaw(), 3, 'cloudLoadState');
     FNB_CLOUD_READY = true;
-    await cloudLoadState();
+    await cloudAfterLoad();
 
-    FNB_SB.channel('fnb-cloud-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: FNB_CLOUD.table }, payload => {
-        try { applyCloudRealtime(payload); } catch (e) { console.warn('Realtime apply failed', e); }
-      })
-      .subscribe(status => {
-        if (status === 'SUBSCRIBED') console.log('F&B Cloud realtime subscribed');
-      });
+    if (!FNB_RT_CHANNEL) {
+      FNB_RT_CHANNEL = FNB_SB.channel('fnb-cloud-sync')
+        .on('postgres_changes', { event: '*', schema: 'public', table: FNB_CLOUD.table }, payload => {
+          try { applyCloudRealtime(payload); } catch (e) { console.warn('Realtime apply failed', e); }
+        })
+        .subscribe(status => {
+          if (status === 'SUBSCRIBED') { console.log('F&B Cloud realtime subscribed'); setConn('online'); }
+          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setConn('offline', 'realtime ' + status);
+        });
+    }
 
+    setConn('online');
+    flushPhotoQueue();
     if (!FNB_CLOUD_TOASTED) {
       FNB_CLOUD_TOASTED = true;
       toast('☁️ Cloud พร้อมใช้งาน · Shared database online', 'success');
     }
   } catch (e) {
     console.error('F&B Cloud init failed:', e);
-    toast(`☁️ Cloud ยังเชื่อมต่อไม่ได้ · ${e.message || e}`, 'warn');
+    FNB_CLOUD_READY = false;
+    setConn('offline', e?.message || String(e));
+    toast('☁️ ยังต่อ Cloud ไม่ได้ · ข้อมูลถูกเก็บไว้ในเครื่องก่อน และจะส่งให้อัตโนมัติเมื่อเน็ตกลับมา', 'warn');
+    scheduleCloudReconnect();
   }
+}
+
+let FNB_RT_CHANNEL = null;
+let FNB_RECONNECT_TIMER = null;
+let FNB_RECONNECT_TRIES = 0;
+function scheduleCloudReconnect() {
+  clearTimeout(FNB_RECONNECT_TIMER);
+  FNB_RECONNECT_TRIES = Math.min(FNB_RECONNECT_TRIES + 1, 6);
+  const wait = Math.round(Math.min(60000, 3000 * Math.pow(1.8, FNB_RECONNECT_TRIES - 1)) + Math.random() * 2000);
+  FNB_RECONNECT_TIMER = setTimeout(() => { if (!FNB_CLOUD_READY) initCloud(); }, wait);
 }
 
 function cloudTimestamp(item, fallback=0) {
@@ -333,31 +479,62 @@ function chooseNewestCloudRow(localItem, remoteRow) {
   return { value: remoteRow.payload, localNewer: false };
 }
 
-async function cloudLoadState() {
+// ดึงทุกแถวแบบแบ่งหน้า — เดิมไม่มี .range() ทำให้ Supabase ส่งกลับสูงสุด 1000 แถว
+// แล้วข้อมูลที่เหลือหายไปเงียบๆ (ไม่มี error) พอใช้ไปสักพักรายงานจะไม่ครบ
+async function cloudFetchAllRows() {
+  const PAGE = 800;
+  const all = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await FNB_SB
+      .from(FNB_CLOUD.table)
+      .select('bucket,item_id,payload,updated_at')
+      .order('bucket', { ascending: true })
+      .order('item_id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    const batch = data || [];
+    all.push(...batch);
+    if (batch.length < PAGE) break;
+    if (from > 200000) break; // กันลูปไม่รู้จบ
+  }
+  return all;
+}
+
+let FNB_FRESH_DB = false;
+
+// โหลด + รวมข้อมูล เท่านั้น ยังไม่เขียนขึ้น cloud
+async function cloudLoadStateRaw() {
   if (!FNB_SB) return;
-  const { data: rows, error } = await FNB_SB.from(FNB_CLOUD.table).select('bucket,item_id,payload,updated_at');
-  if (error) throw error;
-  const list = rows || [];
-  const cfgRow = list.find(r => r.bucket === 'config' && r.item_id === 'state');
+  const list = await cloudFetchAllRows();
+  const cfgRows = list.filter(r => r.bucket === 'config');
   const cloudIns = list.filter(r => r.bucket === 'inspections' && !r.payload?.testRun && !String(r.item_id||'').startsWith('LOADTEST_'));
   const cloudComp = list.filter(r => r.bucket === 'complaints');
 
-  if (!cfgRow && cloudIns.length === 0 && cloudComp.length === 0) {
-    FNB_CLOUD_CACHE.config = cloudConfigPayload();
+  FNB_FRESH_DB = (cfgRows.length === 0 && cloudIns.length === 0 && cloudComp.length === 0);
+  if (FNB_FRESH_DB) {
+    FNB_CLOUD_CACHE.config = {};
+    CONFIG_SECTIONS.forEach(s => { FNB_CLOUD_CACHE.config[s] = JSON.parse(JSON.stringify(configSectionValue(s))); });
     FNB_CLOUD_CACHE.inspections = new Map((DATA.inspections || []).map(x => [x.id, JSON.parse(JSON.stringify(x))]));
     FNB_CLOUD_CACHE.complaints = new Map((DATA.complaints || []).map(x => [x.id, JSON.parse(JSON.stringify(x))]));
-    await cloudSyncNow(true);
     return;
   }
 
-  if (cfgRow?.payload) {
-    const p = cfgRow.payload;
-    if (Array.isArray(p.hotels)) DATA.hotels = p.hotels;
-    if (Array.isArray(p.shifts)) DATA.shifts = p.shifts;
-    if (p.checklists) DATA.checklists = p.checklists;
-    if (p.outletChecklists) DATA.outletChecklists = p.outletChecklists;
-    if (p.settings) DATA.settings = p.settings;
-    FNB_CLOUD_CACHE.config = JSON.parse(JSON.stringify(p));
+  // รองรับทั้งรูปแบบเดิม (config/state แถวเดียว) และรูปแบบใหม่ (แยกแถวต่อหัวข้อ)
+  FNB_CLOUD_CACHE.config = {};
+  const legacy = cfgRows.find(r => r.item_id === 'state');
+  if (legacy?.payload) {
+    CONFIG_SECTIONS.forEach(s => {
+      if (legacy.payload[s] !== undefined) {
+        applyConfigSection(s, legacy.payload[s]);
+        FNB_CLOUD_CACHE.config[s] = JSON.parse(JSON.stringify(legacy.payload[s]));
+      }
+    });
+  }
+  for (const r of cfgRows) {
+    if (!CONFIG_SECTIONS.includes(r.item_id)) continue;
+    const v = r.payload && r.payload.v !== undefined ? r.payload.v : r.payload;
+    applyConfigSection(r.item_id, v);
+    FNB_CLOUD_CACHE.config[r.item_id] = JSON.parse(JSON.stringify(v));
   }
 
   const cloudInsRows = new Map(cloudIns.map(r => [r.item_id, r]));
@@ -382,10 +559,20 @@ async function cloudLoadState() {
   DATA.complaints = Array.from(mergedComp.values());
   FNB_CLOUD_CACHE.inspections = new Map(DATA.inspections.map(x => [x.id, JSON.parse(JSON.stringify(x))]));
   FNB_CLOUD_CACHE.complaints = new Map(DATA.complaints.map(x => [x.id, JSON.parse(JSON.stringify(x))]));
+}
 
-  await cloudSyncNow(true);
+// เรียกหลังโหลดสำเร็จเท่านั้น
+async function cloudAfterLoad() {
+  // ดันขึ้น cloud เฉพาะตอนฐานข้อมูลยังว่าง (ครั้งแรกสุด) หรือมีของในเครื่องที่ใหม่กว่า
+  await cloudSyncNow(FNB_FRESH_DB);
   saveDataLocalOnly();
   render();
+}
+
+// เก็บชื่อเดิมไว้ เผื่อมีที่อื่นเรียก
+async function cloudLoadState() {
+  await cloudLoadStateRaw();
+  await cloudAfterLoad();
 }
 
 function cloudRowPayload(bucket, item) {
@@ -441,10 +628,22 @@ async function verifyCloudRows(expectedRows) {
       const got = new Map((data || []).map(r => [r.item_id, r]));
       for (const expected of chunk) {
         const actual = got.get(expected.item_id);
+        // แถวต้องมีอยู่จริง — อันนี้คือของจริงที่ต้องเตือน
         if (!actual) throw new Error(`Cloud read-back ไม่พบ ${bucket}/${expected.item_id}`);
-        if (jsonStable(actual.payload) !== jsonStable(expected.payload)) {
-          throw new Error(`Cloud read-back ข้อมูลไม่ตรง ${bucket}/${expected.item_id}`);
+        if (jsonStable(actual.payload) === jsonStable(expected.payload)) continue;
+        // ข้อมูลไม่ตรง = มีคนอื่นบันทึกทับระหว่างที่เราเขียนเสร็จกับตอนอ่านกลับ
+        // ซึ่งเป็นเรื่องปกติเมื่อหลายคนใช้พร้อมกัน ไม่ใช่ความผิดพลาด
+        // เดิมโค้ดโยน error ทำให้ขึ้น "บันทึก Cloud ไม่สำเร็จ" ทั้งที่ข้อมูลเข้าแล้ว
+        const remoteTs = remoteTimestamp(actual);
+        const localTs = cloudTimestamp(expected.payload, 0);
+        if (remoteTs >= localTs) {
+          console.info(`read-back: มีคนอื่นอัปเดต ${bucket}/${expected.item_id} ทีหลัง — ใช้ของเขา`);
+          if (bucket === 'inspections' || bucket === 'complaints') {
+            try { applyCloudRealtime({ eventType: 'UPDATE', new: actual }); } catch (_) {}
+          }
+          continue;
         }
+        throw new Error(`Cloud read-back ข้อมูลไม่ตรง ${bucket}/${expected.item_id}`);
       }
     }
   }
@@ -463,14 +662,27 @@ async function verifyCloudDeletes(bucket, ids) {
   }
 }
 
+let FNB_SYNC_PENDING = false;
 async function cloudSyncNow(force = false) {
-  if (!FNB_CLOUD_READY || !FNB_SB || FNB_CLOUD_SYNCING) return;
+  if (!FNB_CLOUD_READY || !FNB_SB) return;
+  if (FNB_CLOUD_SYNCING) {
+    // มีรอบก่อนหน้ากำลังวิ่งอยู่ — จำไว้ว่ายังมีของค้าง แล้วค่อยยิงซ้ำ
+    // (เดิม return ทิ้งเฉยๆ ทำให้การแก้ล่าสุดไม่ถูกส่งขึ้น cloud)
+    FNB_SYNC_PENDING = true;
+    return;
+  }
   FNB_CLOUD_SYNCING = true;
   try {
     const upserts = [];
-    const cfg = cloudConfigPayload();
-    if (force || jsonStable(cfg) !== jsonStable(FNB_CLOUD_CACHE.config)) {
-      upserts.push({ bucket: 'config', item_id: 'state', payload: cfg, updated_at: new Date().toISOString() });
+    // แยก config เป็นแถวย่อยต่อหัวข้อ เพื่อให้แอดมินสองคนแก้คนละเรื่องพร้อมกันได้
+    // โดยของอีกคนไม่หาย (เดิมยัดรวมเป็นแถวเดียว ใครบันทึกทีหลังทับหมด)
+    const cfgSnapshot = {};
+    for (const s of CONFIG_SECTIONS) {
+      const v = JSON.parse(JSON.stringify(configSectionValue(s)));
+      cfgSnapshot[s] = v;
+      if (force || jsonStable(v) !== jsonStable(FNB_CLOUD_CACHE.config?.[s])) {
+        upserts.push({ bucket: 'config', item_id: s, payload: { v } });
+      }
     }
 
     const currentIns = new Map((DATA.inspections || []).map(x => [x.id, x]));
@@ -478,7 +690,7 @@ async function cloudSyncNow(force = false) {
       const clean = cloudRowPayload('inspections', item);
       const prev = FNB_CLOUD_CACHE.inspections.get(id);
       if (force || jsonStable(clean) !== jsonStable(cloudRowPayload('inspections', prev || null))) {
-        upserts.push({ bucket: 'inspections', item_id: id, payload: clean, updated_at: new Date().toISOString() });
+        upserts.push({ bucket: 'inspections', item_id: id, payload: clean });
       }
     }
     const deletesIns = [];
@@ -489,7 +701,7 @@ async function cloudSyncNow(force = false) {
       const clean = JSON.parse(JSON.stringify(item));
       const prev = FNB_CLOUD_CACHE.complaints.get(id);
       if (force || jsonStable(clean) !== jsonStable(prev || null)) {
-        upserts.push({ bucket: 'complaints', item_id: id, payload: clean, updated_at: new Date().toISOString() });
+        upserts.push({ bucket: 'complaints', item_id: id, payload: clean });
       }
     }
     const deletesComp = [];
@@ -514,35 +726,81 @@ async function cloudSyncNow(force = false) {
       await verifyCloudDeletes('complaints', deletesComp);
     }
 
-    FNB_CLOUD_CACHE.config = JSON.parse(JSON.stringify(cfg));
+    FNB_CLOUD_CACHE.config = cfgSnapshot;
     FNB_CLOUD_CACHE.inspections = new Map(currentIns);
     FNB_CLOUD_CACHE.complaints = new Map(currentComp);
+    FNB_CONN.lastSyncAt = Date.now();
+    FNB_RECONNECT_TRIES = 0;
+    if (FNB_CONN.state !== 'online') setConn('online');
   } catch (e) {
     console.error('Cloud sync failed:', e);
-    toast(`บันทึก Cloud ไม่สำเร็จ · ${e.message || e}`, 'warn');
+    const offlineish = !navigator.onLine || /fetch|network|timeout|Failed to fetch/i.test(e?.message || '');
+    if (offlineish) {
+      // เน็ตหลุด: ข้อมูลยังอยู่ในเครื่องและจะส่งให้เองเมื่อกลับมา ไม่ต้องตกใจ
+      setConn('offline', e?.message || '');
+      scheduleCloudReconnect();
+    } else {
+      toast(`บันทึก Cloud ไม่สำเร็จ · ${e.message || e}`, 'warn');
+    }
   } finally {
     FNB_CLOUD_SYNCING = false;
+    if (FNB_SYNC_PENDING) { FNB_SYNC_PENDING = false; setTimeout(() => cloudSyncNow(false), 250); }
   }
 }
 
+// รวบการกดหลายครั้งให้ยิงขึ้น cloud ครั้งเดียว
+// เดิมหน่วงแค่ 80ms ทำให้การตรวจ 1 ใบ (40 หัวข้อ) ยิง 40 ครั้ง
+// และทุกครั้งจะถูก broadcast ไปหาทุกเครื่องที่เปิดอยู่
 function scheduleCloudSync() {
   if (!FNB_CLOUD_READY) return;
   clearTimeout(FNB_CLOUD_TIMER);
-  FNB_CLOUD_TIMER = setTimeout(() => cloudSyncNow(false), 80);
+  FNB_CLOUD_TIMER = setTimeout(() => cloudSyncNow(false), 1500);
+}
+
+// เด้งหน้าจอใหม่แบบรวบรอบ และไม่วาดทับตอนผู้ใช้กำลังพิมพ์
+let FNB_RENDER_TIMER = null;
+function requestRealtimeRender() {
+  clearTimeout(FNB_RENDER_TIMER);
+  FNB_RENDER_TIMER = setTimeout(() => {
+    const ae = document.activeElement;
+    const typing = ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName);
+    const inspecting = VIEW_STATE.page === 'inspection' && VIEW_STATE.inspection?.status !== 'done';
+    if (typing || inspecting) { FNB_RENDER_TIMER = setTimeout(requestRealtimeRender, 2500); return; }
+    render();
+  }, 900);
+}
+let FNB_LOCAL_SAVE_TIMER = null;
+function requestLocalSave() {
+  clearTimeout(FNB_LOCAL_SAVE_TIMER);
+  FNB_LOCAL_SAVE_TIMER = setTimeout(saveDataLocalOnly, 600);
 }
 
 function applyCloudRealtime(payload) {
   const row = payload.eventType === 'DELETE' ? payload.old : payload.new;
   if (!row) return;
-  if (row.bucket === 'config' && row.item_id === 'state') {
+  if (row.bucket === 'config') {
     if (payload.eventType === 'DELETE') return;
+    if (CONFIG_SECTIONS.includes(row.item_id)) {
+      const v = row.payload && row.payload.v !== undefined ? row.payload.v : row.payload;
+      applyConfigSection(row.item_id, v);
+      if (!FNB_CLOUD_CACHE.config) FNB_CLOUD_CACHE.config = {};
+      FNB_CLOUD_CACHE.config[row.item_id] = JSON.parse(JSON.stringify(v));
+      requestLocalSave();
+      requestRealtimeRender();
+      return;
+    }
+    if (row.item_id !== 'state') return;
     const p = row.payload || {};
-    if (Array.isArray(p.hotels)) DATA.hotels = p.hotels;
-    if (Array.isArray(p.shifts)) DATA.shifts = p.shifts;
-    if (p.checklists) DATA.checklists = p.checklists;
-    if (p.outletChecklists) DATA.outletChecklists = p.outletChecklists;
-    if (p.settings) DATA.settings = p.settings;
-    FNB_CLOUD_CACHE.config = JSON.parse(JSON.stringify(p));
+    CONFIG_SECTIONS.forEach(s => {
+      if (p[s] !== undefined) {
+        applyConfigSection(s, p[s]);
+        if (!FNB_CLOUD_CACHE.config) FNB_CLOUD_CACHE.config = {};
+        FNB_CLOUD_CACHE.config[s] = JSON.parse(JSON.stringify(p[s]));
+      }
+    });
+    requestLocalSave();
+    requestRealtimeRender();
+    return;
   } else if (row.bucket === 'inspections') {
     const id = row.item_id;
     if (payload.eventType === 'DELETE') {
@@ -576,13 +834,41 @@ function applyCloudRealtime(payload) {
       }
     }
   }
-  saveDataLocalOnly();
-  // Do not interrupt an in-progress inspection UI; refresh all other screens immediately.
-  if (!(VIEW_STATE.page === 'inspection' && VIEW_STATE.inspection?.status !== 'done')) render();
+  requestLocalSave();
+  // รวบรอบการวาดหน้าจอ และไม่ขัดจังหวะตอนกำลังตรวจหรือกำลังพิมพ์
+  requestRealtimeRender();
 }
 
+let FNB_QUOTA_WARNED = false;
 function saveDataLocalOnly() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DATA)); } catch (_) {}
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(DATA));
+    FNB_QUOTA_WARNED = false;
+  } catch (e) {
+    // localStorage เต็ม (ปกติ ~5MB) — เดิมเงียบสนิท ทำให้ข้อมูลออฟไลน์หายโดยไม่มีใครรู้
+    console.error('saveDataLocalOnly failed:', e);
+    if (trimLocalDataForQuota()) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DATA)); return; } catch (_) {}
+    }
+    if (!FNB_QUOTA_WARNED) {
+      FNB_QUOTA_WARNED = true;
+      toast('⚠️ พื้นที่เก็บในเครื่องเต็ม — ข้อมูลใหม่อาจไม่ถูกเก็บสำรอง กรุณาเชื่อมเน็ตเพื่อส่งขึ้น Cloud', 'warn');
+    }
+  }
+}
+// ตัดรูปในเครื่องของใบเก่าทิ้ง (รูปตัวจริงอยู่บน Cloud แล้ว) เพื่อให้มีที่ว่างพอบันทึก
+function trimLocalDataForQuota() {
+  const list = (DATA.inspections || []).slice().sort((a, b) => (a.completedAt || a.updatedAt || 0) - (b.completedAt || b.updatedAt || 0));
+  let freed = false;
+  for (const insp of list.slice(0, Math.ceil(list.length / 2))) {
+    Object.values(insp.items || {}).forEach(v => {
+      if (Array.isArray(v.photos) && v.photos.some(p => String(p).startsWith('data:'))) {
+        v.photos = v.photos.filter(p => !String(p).startsWith('data:'));
+        freed = true;
+      }
+    });
+  }
+  return freed;
 }
 
 function dataUrlToBlob(dataUrl) {
@@ -663,6 +949,87 @@ async function uploadPhotoToCloud(dataUrl, inspectionId, itemId, stage='manager'
   } catch (_) {}
 
   throw new Error('อัปโหลดสำเร็จแต่เปิดรูปไม่ได้ — ตรวจ Bucket fnb-photos ให้เป็น Public และใช้ SQL setup ล่าสุด');
+}
+
+/* ===================== คิวรูปภาพรอส่ง =====================
+   เดิม: ถ่ายรูปแล้วอัปโหลดทันที ถ้าเน็ตสะดุดคือรูปหายเลย ต้องถ่ายใหม่
+   ใหม่: เก็บรูปที่ย่อแล้วไว้ในเครื่อง แล้วส่งให้เองเมื่อเน็ตกลับมา       */
+const PHOTO_QUEUE_KEY = `${STORAGE_KEY}:photoQueue`;
+const PHOTO_QUEUE_MAX = 40;
+
+function readPhotoQueue() {
+  try { const q = JSON.parse(localStorage.getItem(PHOTO_QUEUE_KEY) || '[]'); return Array.isArray(q) ? q : []; }
+  catch (_) { return []; }
+}
+function writePhotoQueue(q) {
+  try { localStorage.setItem(PHOTO_QUEUE_KEY, JSON.stringify(q.slice(-PHOTO_QUEUE_MAX))); }
+  catch (_) { try { localStorage.setItem(PHOTO_QUEUE_KEY, JSON.stringify(q.slice(-10))); } catch (__) {} }
+  FNB_CONN.pendingPhotos = q.length;
+  paintConnChip();
+}
+function enqueuePhoto(entry) {
+  const q = readPhotoQueue();
+  q.push(entry);
+  writePhotoQueue(q);
+}
+function pendingPhotosFor(inspectionId, itemId, stage) {
+  return readPhotoQueue().filter(p => p.inspectionId === inspectionId && p.itemId === itemId && (!stage || p.stage === stage));
+}
+
+let FNB_PHOTO_QUEUE_RUNNING = false;
+async function flushPhotoQueue() {
+  if (FNB_PHOTO_QUEUE_RUNNING || !FNB_CLOUD_READY || !FNB_SB) return;
+  let q = readPhotoQueue();
+  if (!q.length) { FNB_CONN.pendingPhotos = 0; paintConnChip(); return; }
+  FNB_PHOTO_QUEUE_RUNNING = true;
+  let sent = 0;
+  try {
+    for (const entry of q.slice()) {
+      try {
+        const asset = await uploadPhotoToCloud(entry.dataUrl, entry.inspectionId, entry.itemId, entry.stage);
+        attachUploadedAsset(entry, asset);
+        q = readPhotoQueue().filter(x => x.qid !== entry.qid);
+        writePhotoQueue(q);
+        sent++;
+      } catch (e) {
+        console.warn('ส่งรูปที่ค้างไม่สำเร็จ จะลองใหม่ภายหลัง:', e?.message || e);
+        break; // เน็ตยังไม่ดี หยุดไว้ก่อน ไม่ทิ้งรูป
+      }
+    }
+  } finally {
+    FNB_PHOTO_QUEUE_RUNNING = false;
+  }
+  if (sent) {
+    saveData();
+    render();
+    toast(`📤 ส่งรูปที่ค้างขึ้น Cloud แล้ว ${sent} รูป`, 'success');
+  }
+}
+
+// เอา URL ที่อัปโหลดสำเร็จ ใส่กลับเข้าใบตรวจที่ถูกต้อง
+function attachUploadedAsset(entry, asset) {
+  const insp = (DATA.inspections || []).find(x => x.id === entry.inspectionId)
+    || (VIEW_STATE.inspection?.id === entry.inspectionId ? VIEW_STATE.inspection : null);
+  if (!insp) return;
+  if (entry.stage === 'executive') {
+    if (!insp.execReview) insp.execReview = { items: {} };
+    if (!insp.execReview.items) insp.execReview.items = {};
+    const er = insp.execReview.items[entry.itemId] || (insp.execReview.items[entry.itemId] = {});
+    if (!Array.isArray(er.execPhotos)) er.execPhotos = getExecPhotos(er);
+    if (!Array.isArray(er.execEvidence)) er.execEvidence = [];
+    er.execPhotos.push(asset.url);
+    er.execPhoto = asset.url;
+    er.execEvidence.push({ url: asset.url, path: asset.path, storageMode: asset.storageMode || 'public',
+      stage: 'executive', uploadedAt: entry.ts, uploadedBy: entry.userId, uploadedByName: entry.userName });
+  } else {
+    if (!insp.items) insp.items = {};
+    const it = insp.items[entry.itemId] || (insp.items[entry.itemId] = {});
+    if (!Array.isArray(it.photos)) it.photos = [];
+    if (!Array.isArray(it.photoEvidence)) it.photoEvidence = [];
+    it.photos.push(asset.url);
+    it.photoEvidence.push({ url: asset.url, path: asset.path, storageMode: asset.storageMode || 'public',
+      stage: 'manager', uploadedAt: entry.ts, uploadedBy: entry.userId, uploadedByName: entry.userName });
+  }
 }
 
 function queuePhotoDeletion(paths) {
@@ -819,10 +1186,11 @@ const DEFAULT_SHIFTS = [
 
 const DEFAULT_DATA = {
   users: [
-    { id: 'u1', username: 'admin', password: '1234', name: 'ผู้ดูแลระบบ', role: 'admin' },
-    { id: 'u2', username: 'exec', password: '1234', name: 'ฝ่ายบริหาร', role: 'exec' },
-    { id: 'u3', username: 'manager', password: '1234', name: 'ผู้จัดการ', role: 'manager' },
-    { id: 'u4', username: 'inspector', password: '1234', name: 'ผู้ตรวจ', role: 'inspector' },
+    // passwordHash = SHA-256 ของรหัสผ่าน (ค่าเริ่มต้นคือ 1234 — ควรเปลี่ยนในหน้าตั้งค่า)
+    { id: 'u1', username: 'admin', passwordHash: 'a2c1eba2bcdc3644c4a8ff2691402fd8b28199897242b8dced004c5104d17b84', name: 'ผู้ดูแลระบบ', role: 'admin' },
+    { id: 'u2', username: 'exec', passwordHash: 'a2c1eba2bcdc3644c4a8ff2691402fd8b28199897242b8dced004c5104d17b84', name: 'ฝ่ายบริหาร', role: 'exec' },
+    { id: 'u3', username: 'manager', passwordHash: 'a2c1eba2bcdc3644c4a8ff2691402fd8b28199897242b8dced004c5104d17b84', name: 'ผู้จัดการ', role: 'manager' },
+    { id: 'u4', username: 'inspector', passwordHash: 'a2c1eba2bcdc3644c4a8ff2691402fd8b28199897242b8dced004c5104d17b84', name: 'ผู้ตรวจ', role: 'inspector' },
   ],
   hotels: [
     { id: 'baiyoke', name: 'Baiyoke Sky Hotel', theme: 'baiyoke', logo: 'images/baiyoke.jpg', emoji: '🏆',
@@ -1015,6 +1383,7 @@ function render() {
       }
     }
     closeModal();
+    paintConnChip();
   } catch(e) {
     console.error(e);
     document.getElementById('app').innerHTML = `<div style="padding:40px;background:#faf5e8;color:#1a1611;min-height:100vh"><h2 style="color:#dc2626">เกิดข้อผิดพลาด</h2><pre style="background:#fee2e2;padding:16px;border-radius:12px;overflow:auto;font-size:12px">${(e.stack||e.message).replace(/</g,'&lt;')}</pre></div>`;
@@ -1400,15 +1769,39 @@ const ACTIONS = {
 };
 
 // LOGIN
-function doLogin() {
+// รหัสผ่านถูกเก็บเป็นค่า hash (SHA-256 + salt) แทนตัวอักษรเปล่า
+// เดิมเปิด View Source ก็อ่านรหัสของทุกคนได้ทันที
+const PW_SALT = 'fnb-standards-2569';
+async function hashPassword(plain) {
+  try {
+    const buf = new TextEncoder().encode(PW_SALT + ':' + plain);
+    const digest = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch (_) {
+    return null; // เบราว์เซอร์เก่า/เปิดผ่าน http — ถอยไปเทียบแบบเดิม
+  }
+}
+function isHashed(v) { return typeof v === 'string' && /^[0-9a-f]{64}$/.test(v); }
+async function passwordMatches(user, plain) {
+  const stored = user.passwordHash || user.password;
+  if (!stored) return false;
+  if (isHashed(stored)) {
+    const h = await hashPassword(plain);
+    return h !== null && h === stored;
+  }
+  return stored === plain; // ข้อมูลเก่าที่ยังเป็นตัวอักษรเปล่า
+}
+
+async function doLogin() {
   const u = (document.getElementById('login-user')?.value||'').trim().toLowerCase();
   const p = (document.getElementById('login-pass')?.value||'').trim();
   const err = document.getElementById('login-err');
   if (!u || !p) { if (err) { err.textContent='กรุณากรอกชื่อผู้ใช้และรหัสผ่าน'; err.style.display='block'; } return; }
-  const found = DATA.users.find(x => x.username.toLowerCase() === u && x.password === p);
-  if (!found) { if (err) { err.textContent='ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง'; err.style.display='block'; } return; }
-  SESSION.user = found;
-  toast(`ยินดีต้อนรับ ${found.name} 👋`);
+  const candidate = DATA.users.find(x => x.username.toLowerCase() === u);
+  const ok = candidate ? await passwordMatches(candidate, p) : false;
+  if (!ok) { if (err) { err.textContent='ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง'; err.style.display='block'; } return; }
+  SESSION.user = candidate;
+  toast(`ยินดีต้อนรับ ${candidate.name} 👋`);
   nav('home');
 }
 
@@ -1497,6 +1890,7 @@ function topbar() {
         </div>
       </div>
       <div class="flex items-center gap-1 flex-wrap justify-end">
+        <span id="conn-chip" class="conn-chip wait" title="สถานะการเชื่อมต่อ"><span class="conn-dot"></span><span>กำลังเชื่อมต่อ</span></span>
         <button data-action="nav" data-page="home" class="nav-btn ${p==='home'?'active':''}" title="Home">🏠 <span class="hidden md:inline">หน้าหลัก</span></button>
         <button data-action="nav" data-page="history" class="nav-btn ${p==='history'?'active':''}" title="History">📋 <span class="hidden md:inline">ประวัติ</span> ${pendingCount>0 && canSeeExecReview()?`<span class="badge badge-red" style="margin-left:4px">${pendingCount}</span>`:''}</button>
         <button data-action="nav" data-page="complaints" class="nav-btn ${p==='complaints'?'active':''}" title="Complaints">📢 <span class="hidden md:inline">คอมเพลนต์</span> ${openComplaints>0?`<span class="badge badge-red" style="margin-left:4px">${openComplaints}</span>`:''}</button>
@@ -1903,6 +2297,7 @@ function renderTableCard(t, idx) {
 
 function renderInspectionItem(item, insp, idx) {
   const val = insp.items[item.id] || { status: null, note: '', photos: [] };
+  const pendingHere = pendingPhotosFor(insp.id, item.id, 'manager');
   if (!val.photos) val.photos = [];
   const s = val.status;
   const badgeBg = s==='pass'?'#dcfce7':s==='warn'?'#ffedd5':s==='fail'?'#fee2e2':'#f5f5f4';
@@ -1929,11 +2324,12 @@ function renderInspectionItem(item, insp, idx) {
         <input type="file" accept="image/*" capture="environment" data-photo-input data-item-id="${item.id}" style="display:none">
       </label>
     </div>
-    <div data-photo-preview="${item.id}" style="${val.photos.length?'':'display:none;'}margin-top:10px">
+    <div data-photo-preview="${item.id}" style="${(val.photos.length||pendingHere.length)?'':'display:none;'}margin-top:10px">
       <div class="flex gap-2 flex-wrap">
         ${val.photos.map((p,i) => `<div class="relative inline-block" style="width:80px"><img src="${p}" alt="หลักฐาน" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid #ecdcb7;background:#f7f4ec" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div style="display:none;width:80px;height:80px;border-radius:8px;border:1px solid #e5d6b8;background:#f7f4ec;align-items:center;justify-content:center;text-align:center;font-size:10px;color:#8b6820;padding:4px">โหลดภาพไม่ได้</div><button data-action="removePhoto" data-item-id="${item.id}" data-photo-idx="${i}" style="position:absolute;top:-8px;right:-8px;width:24px;height:24px;background:#dc2626;color:white;border:0;border-radius:50%;cursor:pointer;font-size:11px">✕</button></div>`).join('')}
+        ${pendingHere.map(q => `<div class="relative inline-block photo-pending" style="width:80px"><img src="${q.dataUrl}" alt="รอส่ง" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:2px solid #d97706;background:#f7f4ec"></div>`).join('')}
       </div>
-      ${val.photos.length>0 ? `<div class="text-xs mt-1" style="color:#5c5138">${val.photos.length} รูป · photos</div>`:''}
+      ${(val.photos.length||pendingHere.length) ? `<div class="text-xs mt-1" style="color:#5c5138">${val.photos.length} รูปบน Cloud${pendingHere.length?` · <span style="color:#b45309;font-weight:600">${pendingHere.length} รูปรอส่ง</span>`:''}</div>`:''}
     </div>
   </div>`;
 }
@@ -2028,13 +2424,20 @@ async function attachPhoto(ev, itemId) {
   }
 
   let done = 0;
-  let failed = 0;
+  let queued = 0;
   for (const file of files) {
+    let dataUrl = null;
     try {
-      const dataUrl = await new Promise((resolve, reject) => {
-        compressImage(file, resolve);
-        setTimeout(() => reject(new Error('รูปใช้เวลานานเกินไป')), 30000);
+      dataUrl = await new Promise((resolve, reject) => {
+        compressImage(file, resolve, reject);
+        setTimeout(() => reject(new Error('อ่านไฟล์รูปไม่สำเร็จ หรือไฟล์ใหญ่เกินไป')), 30000);
       });
+    } catch (e) {
+      console.error('compressImage failed', e);
+      toast(`เปิดไฟล์รูปไม่ได้ · ${e?.message || e}`, 'warn');
+      continue;
+    }
+    try {
       const asset = await uploadPhotoToCloud(dataUrl, VIEW_STATE.inspection.id, itemId, 'manager');
       item.photos.push(asset.url);
       item.photoEvidence.push({
@@ -2044,18 +2447,23 @@ async function attachPhoto(ev, itemId) {
       });
       done++;
     } catch (e) {
-      failed++;
-      console.error('Photo upload failed', e);
-      toast(`แนบรูปไม่สำเร็จ · ${e?.message || e}`, 'warn');
+      // อัปโหลดไม่ผ่าน = เก็บเข้าคิวไว้ในเครื่อง ไม่ทิ้งรูป ไม่ต้องถ่ายใหม่
+      console.warn('อัปโหลดไม่สำเร็จ เก็บเข้าคิวรอส่ง:', e?.message || e);
+      enqueuePhoto({
+        qid: uid(), inspectionId: VIEW_STATE.inspection.id, itemId, stage: 'manager',
+        dataUrl, ts: Date.now(), userId: SESSION.user.id, userName: SESSION.user.name
+      });
+      queued++;
     }
   }
   autoSave();
   render();
-  if (done) {
+  if (done && !queued) {
     const signedCount = item.photoEvidence.filter(x => x.storageMode === 'signed').length;
-    toast(`แนบหลักฐาน Manager แล้ว ${done} รูป · Cloud ${signedCount ? 'ใช้ Signed URL ชั่วคราว — ควรเปิด Public bucket' : 'พร้อมใช้งาน'}${failed ? ` · ล้มเหลว ${failed}` : ''}`, signedCount ? 'warn' : 'success');
+    toast(`แนบหลักฐาน Manager แล้ว ${done} รูป${signedCount ? ' · Cloud ใช้ Signed URL ชั่วคราว — ควรเปิด Public bucket' : ''}`, signedCount ? 'warn' : 'success');
+  } else if (queued) {
+    toast(`📎 เก็บรูปไว้ในเครื่องแล้ว ${queued} รูป · จะส่งขึ้น Cloud อัตโนมัติเมื่อเน็ตกลับมา${done ? ` (ส่งสำเร็จแล้ว ${done})` : ''}`, 'warn');
   }
-  else toast('แนบรูปไม่สำเร็จ', 'warn');
   ev.target.value = '';
 }
 async function attachExecPhoto(ev, itemId) {
@@ -2071,13 +2479,20 @@ async function attachExecPhoto(ev, itemId) {
     if (!Array.isArray(er.execPhotos)) er.execPhotos = getExecPhotos(er);
     if (!Array.isArray(er.execEvidence)) er.execEvidence = [];
     let done = 0;
-    let failed = 0;
+    let queued = 0;
     for (const file of files) {
+      let dataUrl = null;
       try {
-        const dataUrl = await new Promise((resolve, reject) => {
-          compressImage(file, resolve);
-          setTimeout(() => reject(new Error('รูปใช้เวลานานเกินไป')), 30000);
+        dataUrl = await new Promise((resolve, reject) => {
+          compressImage(file, resolve, reject);
+          setTimeout(() => reject(new Error('อ่านไฟล์รูปไม่สำเร็จ หรือไฟล์ใหญ่เกินไป')), 30000);
         });
+      } catch (e) {
+        console.error('compressImage failed', e);
+        toast(`เปิดไฟล์รูปไม่ได้ · ${e?.message || e}`, 'warn');
+        continue;
+      }
+      try {
         const asset = await uploadPhotoToCloud(dataUrl, VIEW_STATE.historyId, itemId, 'executive');
         er.execPhotos.push(asset.url);
         er.execEvidence.push({
@@ -2088,14 +2503,17 @@ async function attachExecPhoto(ev, itemId) {
         er.execPhoto = asset.url;
         done++;
       } catch (e) {
-        failed++;
-        console.error('Executive photo upload failed', e);
-        toast(`แนบรูปตรวจซ้ำไม่สำเร็จ · ${e?.message || e}`, 'warn');
+        console.warn('อัปโหลดรูปตรวจซ้ำไม่สำเร็จ เก็บเข้าคิว:', e?.message || e);
+        enqueuePhoto({
+          qid: uid(), inspectionId: VIEW_STATE.historyId, itemId, stage: 'executive',
+          dataUrl, ts: Date.now(), userId: SESSION.user.id, userName: SESSION.user.name
+        });
+        queued++;
       }
     }
     saveData(); render();
-    if (done) toast(`แนบหลักฐาน Executive แล้ว ${done} รูป${failed ? ` · ล้มเหลว ${failed}` : ''}`);
-    else toast('แนบรูปไม่สำเร็จ', 'warn');
+    if (done && !queued) toast(`แนบหลักฐาน Executive แล้ว ${done} รูป`, 'success');
+    else if (queued) toast(`📎 เก็บรูปไว้ในเครื่องแล้ว ${queued} รูป · จะส่งขึ้น Cloud เมื่อเน็ตกลับมา`, 'warn');
   } catch (e) {
     console.error('Executive photo upload failed', e);
     toast(`แนบรูปไม่สำเร็จ · ${e.message || e}`, 'warn');
@@ -2103,20 +2521,36 @@ async function attachExecPhoto(ev, itemId) {
     ev.target.value = '';
   }
 }
-function compressImage(file, cb) {
-  const reader = new FileReader();
-  reader.onload = e => {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement('canvas');
-      const s = Math.min(1, 800 / Math.max(img.width, img.height));
-      c.width = img.width * s; c.height = img.height * s;
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      cb(c.toDataURL('image/jpeg', 0.75));
-    };
-    img.src = e.target.result;
+function compressImage(file, cb, onError) {
+  const fail = e => { if (typeof onError === 'function') onError(e instanceof Error ? e : new Error(String(e || 'อ่านรูปไม่สำเร็จ'))); };
+  // ใช้ createImageBitmap ก่อน เพราะหมุนรูปตาม EXIF ให้เอง
+  // (บางรุ่นถ่ายแนวตั้งแล้วรูปออกมานอน ถ้าใช้ new Image() เฉย ๆ)
+  const draw = src => {
+    const c = document.createElement('canvas');
+    const w = src.width, h = src.height;
+    const s = Math.min(1, 800 / Math.max(w, h));
+    c.width = Math.max(1, Math.round(w * s));
+    c.height = Math.max(1, Math.round(h * s));
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    try { cb(c.toDataURL('image/jpeg', 0.75)); } catch (e) { fail(e); }
   };
-  reader.readAsDataURL(file);
+  if (window.createImageBitmap) {
+    createImageBitmap(file, { imageOrientation: 'from-image' })
+      .then(draw)
+      .catch(() => legacyRead());
+  } else legacyRead();
+
+  function legacyRead() {
+    const reader = new FileReader();
+    reader.onerror = () => fail(new Error('อ่านไฟล์ไม่ได้'));
+    reader.onload = e => {
+      const img = new Image();
+      img.onerror = () => fail(new Error('ไฟล์รูปนี้เปิดไม่ได้ (เช่นไฟล์ HEIC) — ลองถ่ายใหม่ด้วยปุ่มกล้อง'));
+      img.onload = () => draw(img);
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
 }
 
 // Get the checklist for an outlet — defensive against legacy/malformed cloud data.
@@ -4242,7 +4676,7 @@ function renderAdminUsers() {
           <div class="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white" style="background:linear-gradient(135deg,#fb923c,#c2410c)">${u.name.charAt(0)}</div>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-semibold" style="color:#1c1917">${u.name} <span class="badge ${roles[u.role]||'badge-neutral'}">${u.role}</span></div>
-            <div class="text-xs truncate" style="color:#78716c">${u.username} • ${u.password}</div>
+            <div class="text-xs truncate" style="color:#78716c">${u.username} • ${isHashed(u.passwordHash||u.password) ? '••••••' : '<span style="color:#b45309">รหัสยังไม่เข้ารหัส — กดแก้ไขเพื่อตั้งใหม่</span>'}</div>
           </div>
           <button data-action="editUser" data-id="${u.id}" class="btn-secondary">แก้ไข · Edit</button>
           ${u.id !== SESSION.user.id ? `<button data-action="delUser" data-id="${u.id}" style="color:#dc2626;background:none;border:0;padding:8px;cursor:pointer">🗑️</button>` : ''}
@@ -4269,9 +4703,12 @@ function addUser() {
       { name: 'role', label: 'บทบาท · Role', type: 'select', value: 'inspector', options: ROLE_OPTIONS },
     ],
     submitLabel: '+ เพิ่มผู้ใช้',
-    onSubmit: (v) => {
+    onSubmit: async (v) => {
       if (!v.name || !v.username) { toast('กรุณาใส่ชื่อและ username', 'warn'); return; }
-      DATA.users.push({ id: uid(), username: v.username, password: v.password || '1234', name: v.name, role: v.role });
+      const h = await hashPassword(v.password || '1234');
+      const rec = { id: uid(), username: v.username, name: v.name, role: v.role };
+      if (h) rec.passwordHash = h; else rec.password = v.password || '1234';
+      DATA.users.push(rec);
       saveData(); closeModal(); render(); toast('เพิ่มผู้ใช้แล้ว ✓');
     }
   });
@@ -4284,12 +4721,16 @@ function editUser(id) {
     fields: [
       { name: 'name', label: 'ชื่อ-นามสกุล · Full Name', value: u.name },
       { name: 'username', label: 'Username', value: u.username },
-      { name: 'password', label: 'รหัสผ่าน · Password', value: u.password },
+      { name: 'password', label: 'รหัสผ่านใหม่ · New Password', placeholder: 'เว้นว่าง = ใช้รหัสเดิม', value: '' },
       { name: 'role', label: 'บทบาท · Role', type: 'select', value: u.role, options: ROLE_OPTIONS },
     ],
-    onSubmit: (v) => {
+    onSubmit: async (v) => {
       if (!v.name || !v.username) { toast('กรุณาใส่ชื่อและ username', 'warn'); return; }
-      u.name = v.name; u.username = v.username; u.password = v.password; u.role = v.role;
+      u.name = v.name; u.username = v.username; u.role = v.role;
+      if (v.password) {
+        const h = await hashPassword(v.password);
+        if (h) { u.passwordHash = h; delete u.password; } else { u.password = v.password; }
+      }
       saveData(); closeModal(); render(); toast('บันทึกแล้ว ✓');
     }
   });
@@ -5010,7 +5451,34 @@ function getGlobalStats() {
   return { total, avgScore, today: todayCount };
 }
 
+// ===== เฝ้าสถานะเน็ต =====
+window.addEventListener('online', () => {
+  setConn('connecting');
+  if (!FNB_CLOUD_READY) initCloud();
+  else { cloudSyncNow(false); flushPhotoQueue(); setConn('online'); }
+});
+window.addEventListener('offline', () => setConn('offline', 'อุปกรณ์ออฟไลน์'));
+// กลับมาเปิดหน้าจออีกครั้ง: ดึงข้อมูลล่าสุดและส่งของค้าง
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!navigator.onLine) { setConn('offline', 'อุปกรณ์ออฟไลน์'); return; }
+  if (!FNB_CLOUD_READY) initCloud();
+  else { cloudSyncNow(false); flushPhotoQueue(); }
+});
+// ส่งรูปที่ค้างเป็นระยะ เผื่อเน็ตกลับมาแบบเงียบๆ
+setInterval(() => { if (navigator.onLine && FNB_CLOUD_READY) flushPhotoQueue(); }, 45000);
+
 // INIT
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { render(); initCloud(); setTimeout(() => flushPhotoDeletionQueue(), 1800); });
-else { render(); initCloud(); setTimeout(() => flushPhotoDeletionQueue(), 1800); }
+function bootApp() {
+  FNB_CONN.pendingPhotos = readPhotoQueue().length;
+  render();
+  if (!navigator.onLine) setConn('offline', 'อุปกรณ์ออฟไลน์');
+  initCloud();
+  setTimeout(() => flushPhotoDeletionQueue(), 1800);
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootApp);
+else bootApp();
 </script>
+
+</body>
+</html>
