@@ -1571,6 +1571,24 @@ function closeModal() {
   if (root) root.innerHTML = '';
 }
 
+// EVENT ACTION DISPATCHER — desktop + touch clicks
+function handleAction(e) {
+  try {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const a = el.dataset.action;
+    if (!a || a === 'noop') return;
+    if (el._acted && Date.now() - el._acted < 400) return;
+    el._acted = Date.now();
+    if (e.type === 'click' && e.cancelable) e.preventDefault();
+    if (typeof ACTIONS !== 'undefined' && ACTIONS[a]) ACTIONS[a](el.dataset, el, e);
+    else if (typeof toast === 'function') toast('ไม่พบ action: '+a, 'error');
+  } catch (err) {
+    console.error('handleAction error:', err);
+    if (typeof toast === 'function') toast('ผิดพลาด: '+err.message, 'error');
+  }
+}
+
 // EVENT DELEGATION — touch-safe
 // A finger drag must remain a scroll, never an accidental outlet/action click.
 // On PointerEvent-capable browsers pointerup handles touch; touchend is only a
