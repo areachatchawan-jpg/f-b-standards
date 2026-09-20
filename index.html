@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
-<meta name="app-build" content="2026-09-20-mobile-scroll-dirty-fix">
+<meta name="app-build" content="2026-09-20-antibounce">
 <meta name="theme-color" content="#b8892f">
 <meta name="format-detection" content="telephone=no">
 <meta name="mobile-web-app-capable" content="yes">
@@ -166,11 +166,13 @@
   [data-action]:active { transform: scale(0.96) !important; transition: transform 0.1s !important; }
   button, [data-action] { cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   button { touch-action: manipulation; }
-  /* Outlet cards are display-only containers; only the Start button is actionable. */
+  /* MOBILE OUTLET SCROLL SAFETY: card itself is not clickable; only Start button is */
   .outlet-card { cursor: default; user-select: none; -webkit-user-select: none; }
   .outlet-card:active { transform: none !important; }
   .outlet-card .outlet-start-btn { touch-action: manipulation; min-height: 46px; }
-  @media (max-width: 767px) { .outlet-card { touch-action: pan-y; } }
+  @media (max-width: 767px) {
+    .outlet-card { touch-action: pan-y; }
+  }
   .modal-backdrop { position: fixed; inset: 0; background: rgba(26,22,17,0.55); backdrop-filter: blur(6px); z-index: 90; display: flex; align-items: center; justify-content: center; padding: 20px; animation: fade 0.2s ease-out; }
   .modal-body { background: white; border-radius: 22px; max-width: 500px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.25), 0 0 0 1px rgba(212,175,108,0.15); animation: bounce 0.3s cubic-bezier(0.68,-0.55,0.265,1.55); }
   .severity-star { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-size: 22px; transition: all 0.15s; }
@@ -282,9 +284,6 @@
     .card-hover:hover { transform: none; }
     .btn-primary:hover { transform: none; }
   }
-  /* Restaurant list: keep card geometry stable on touch devices. */
-  .outlets-page .card-hover { transform: none; transition: box-shadow .2s ease, border-color .2s ease; }
-  @media (hover: hover) { .outlets-page .card-hover:hover { transform: translateY(-4px); } }
   /* (4) การ์ดใบใหญ่ ไม่ต้องหดแรง 4% ตอนกด (ดูเหมือนเด้ง) */
   .card[data-action]:active, .card-hover[data-action]:active { transform: scale(0.985) !important; }
   /* (5) ใช้ svh (ความสูงจอแบบเล็กสุด) แทน vh — แถบ Safari ยุบ/ขยายแล้วหน้าไม่ขยับ */
@@ -720,7 +719,6 @@ async function verifyCloudDeletes(bucket, ids) {
 }
 
 let FNB_SYNC_PENDING = false;
-let FNB_LAST_SYNC_OK = false;
 async function cloudSyncNow(force = false) {
   if (!FNB_CLOUD_READY || !FNB_SB) return;
   if (FNB_CLOUD_SYNCING) {
@@ -788,11 +786,9 @@ async function cloudSyncNow(force = false) {
     FNB_CLOUD_CACHE.inspections = new Map(currentIns);
     FNB_CLOUD_CACHE.complaints = new Map(currentComp);
     FNB_CONN.lastSyncAt = Date.now();
-    FNB_LAST_SYNC_OK = true;
     FNB_RECONNECT_TRIES = 0;
     if (FNB_CONN.state !== 'online') setConn('online');
   } catch (e) {
-    FNB_LAST_SYNC_OK = false;
     console.error('Cloud sync failed:', e);
     const offlineish = !navigator.onLine || /fetch|network|timeout|Failed to fetch/i.test(e?.message || '');
     if (offlineish) {
@@ -817,52 +813,9 @@ function scheduleCloudSync() {
   FNB_CLOUD_TIMER = setTimeout(() => cloudSyncNow(false), 1500);
 }
 
-async function waitForCloudReady(timeoutMs = 6000) {
-  if (FNB_CLOUD_READY && FNB_SB) return true;
-  try { if (!FNB_CLOUD_READY) initCloud(); } catch (_) {}
-  const started = Date.now();
-  while (!(FNB_CLOUD_READY && FNB_SB) && Date.now() - started < timeoutMs) {
-    await new Promise(r => setTimeout(r, 100));
-  }
-  return !!(FNB_CLOUD_READY && FNB_SB);
-}
-
-async function commitCloudNow(timeoutMs = 10000) {
-  const ready = await waitForCloudReady(Math.min(6000, timeoutMs));
-  if (!ready) return false;
-  clearTimeout(FNB_CLOUD_TIMER);
-  const started = Date.now();
-  // Finish any sync already in flight before starting the final commit.
-  while (FNB_CLOUD_SYNCING && Date.now() - started < timeoutMs) {
-    await new Promise(r => setTimeout(r, 75));
-  }
-  if (FNB_CLOUD_SYNCING) return false;
-  FNB_LAST_SYNC_OK = false;
-  await cloudSyncNow(false);
-  while (FNB_CLOUD_SYNCING && Date.now() - started < timeoutMs) {
-    await new Promise(r => setTimeout(r, 75));
-  }
-  return !FNB_CLOUD_SYNCING && FNB_CLOUD_READY && FNB_CONN.state === 'online' && FNB_LAST_SYNC_OK;
-}
-
-async function refreshCloudSnapshot() {
-  if (!(FNB_CLOUD_READY && FNB_SB)) return false;
-  try {
-    await cloudLoadStateRaw();
-    saveDataLocalOnly();
-    return true;
-  } catch (e) {
-    console.warn('Cloud refresh failed:', e);
-    return false;
-  }
-}
-
 // เด้งหน้าจอใหม่แบบรวบรอบ และไม่วาดทับตอนผู้ใช้กำลังพิมพ์
 let FNB_RENDER_TIMER = null;
 function requestRealtimeRender() {
-  // Do not replace #app while the restaurant list is open. Background Cloud
-  // events must not interrupt native iOS scroll momentum or jump the list.
-  if (VIEW_STATE.page === 'outlets') return;
   clearTimeout(FNB_RENDER_TIMER);
   FNB_RENDER_TIMER = setTimeout(() => {
     const ae = document.activeElement;
@@ -1326,7 +1279,7 @@ function isLoadTestInspection(item) {
 
 let DATA = loadData();
 let SESSION = { user: null };
-let VIEW_STATE = { page: 'login', hotelId: null, outletId: null, inspection: null, historyId: null, adminTab: 'users', inspectionType: 'standards', complaintForm: null, historyFilter: 'all', kpiHotel: 'baiyoke', inspectionDirty: false };
+let VIEW_STATE = { page: 'login', hotelId: null, outletId: null, inspection: null, historyId: null, adminTab: 'users', inspectionType: 'standards', complaintForm: null, historyFilter: 'all', kpiHotel: 'baiyoke' };
 
 function loadData() {
   try {
@@ -1344,7 +1297,8 @@ function loadData() {
       if (!p.settings) p.settings = { autoCompact: true, compactDays: 30 };
       // Never mix synthetic LOADTEST rows into operational F&B history.
       p.inspections = p.inspections.filter(i => !isLoadTestInspection(i));
-      // Migrate old inspections: keep completed rows reviewable by Admin/Executive.
+      // Migrate old inspections: ensure tables + executive review state exist.
+      // Historical completed inspections without execReview must remain reviewable.
       p.inspections.forEach(i => {
         if (!i.tables) i.tables = [];
         if (i.status === 'done' && (!i.execReview || !i.execReview.status)) {
@@ -1553,30 +1507,14 @@ function closeModal() {
 
 // EVENT DELEGATION — touch-safe
 // A finger drag must remain a scroll, never an accidental outlet/action click.
+// On PointerEvent-capable browsers pointerup handles touch; touchend is only a
+// legacy fallback. Clicks generated after touch are suppressed for 800ms.
 let _lastTouchActAt = 0;
 let _touchStartX = 0;
 let _touchStartY = 0;
 let _touchMoved = false;
-let _touchPointerSeen = false;
-let _suppressLegacyTouchEnd = false;
+let _touchPointerActive = false;
 const TOUCH_MOVE_THRESHOLD = 12;
-
-function handleAction(e) {
-  try {
-    const el = e.target.closest('[data-action]');
-    if (!el) return;
-    const a = el.dataset.action;
-    if (!a || a === 'noop') return;
-    if (el._acted && Date.now() - el._acted < 400) return;
-    el._acted = Date.now();
-    if (e.type === 'click' && e.cancelable) e.preventDefault();
-    if (typeof ACTIONS !== 'undefined' && ACTIONS[a]) ACTIONS[a](el.dataset, el, e);
-    else if (typeof toast === 'function') toast('ไม่พบ action: '+a, 'error');
-  } catch(err) {
-    console.error('handleAction error:', err);
-    if (typeof toast === 'function') toast('ผิดพลาด: '+err.message, 'error');
-  }
-}
 
 document.addEventListener('touchstart', function(e) {
   const t = e.touches?.[0];
@@ -1584,8 +1522,7 @@ document.addEventListener('touchstart', function(e) {
   _touchStartX = t.clientX;
   _touchStartY = t.clientY;
   _touchMoved = false;
-  _touchPointerSeen = !!window.PointerEvent;
-  _suppressLegacyTouchEnd = false;
+  _touchPointerActive = !!window.PointerEvent;
 }, {passive:true});
 
 document.addEventListener('touchmove', function(e) {
@@ -1600,10 +1537,8 @@ document.addEventListener('touchmove', function(e) {
 document.addEventListener('pointerup', function(e) {
   if (e.pointerType === 'mouse') return;
   if (_touchMoved) {
-    _suppressLegacyTouchEnd = true;
-    _lastTouchActAt = Date.now();
     _touchMoved = false;
-    _touchPointerSeen = false;
+    _touchPointerActive = false;
     return;
   }
   const el = e.target.closest('[data-action]');
@@ -1611,18 +1546,13 @@ document.addEventListener('pointerup', function(e) {
   if (Date.now() - _lastTouchActAt < 800) return;
   _lastTouchActAt = Date.now();
   handleAction(e);
-  _touchPointerSeen = false;
+  _touchPointerActive = false;
 }, {passive:true});
 
 document.addEventListener('touchend', function(e) {
-  if (_suppressLegacyTouchEnd) {
-    _suppressLegacyTouchEnd = false;
-    _touchPointerSeen = false;
-    return;
-  }
-  // Modern PointerEvent browsers already handled the touch in pointerup.
-  if (_touchPointerSeen) {
-    _touchPointerSeen = false;
+  // Modern browsers already handled the gesture through pointerup.
+  if (_touchPointerActive) {
+    _touchPointerActive = false;
     _touchMoved = false;
     return;
   }
@@ -1732,7 +1662,6 @@ document.addEventListener('input', function(e) {
 function autoSave() {
   const insp = VIEW_STATE.inspection;
   if (!insp) return;
-  if (insp.status !== 'done') VIEW_STATE.inspectionDirty = true;
   insp.updatedAt = Date.now();
   const idx = DATA.inspections.findIndex(x => x.id === insp.id);
   if (idx >= 0) DATA.inspections[idx] = insp; else DATA.inspections.push(insp);
@@ -1746,40 +1675,24 @@ const ACTIONS = {
     const extras = {};
     ['hotelId','outletId','historyId','kpiHotel'].forEach(k => { if (d[k]) extras[k] = d[k]; });
     nav(d.page, extras);
-    if (['history','summary','execReview'].includes(d.page) && (isExec() || d.page !== 'history')) {
-      setTimeout(async () => {
-        const ok = await refreshCloudSnapshot();
-        if (ok && VIEW_STATE.page === d.page) render();
-      }, 0);
-    }
   },
   closeModal: () => closeModal(),
   pickInspectionType: (d) => {
     VIEW_STATE.inspection = null;
-    VIEW_STATE.inspectionDirty = false;
     nav('inspection', { hotelId: d.hotelId, outletId: d.outletId, inspectionType: 'main' });
   },
   startInspection: (d) => {
     VIEW_STATE.inspection = null;
-    VIEW_STATE.inspectionDirty = false;
     closeModal();
     nav('inspection', { hotelId: d.hotelId, outletId: d.outletId, inspectionType: 'main' });
   },
   cancelInspection: () => {
     const insp = VIEW_STATE.inspection;
     const isEditing = insp?.status === 'done';
-    const isDirty = VIEW_STATE.inspectionDirty === true;
     if (isEditing) {
+      // Just navigate back — no data lost since edits saved automatically
       VIEW_STATE.inspection = null;
-      VIEW_STATE.inspectionDirty = false;
       nav('history');
-      return;
-    }
-    if (!isDirty) {
-      if (insp) DATA.inspections = DATA.inspections.filter(x => x.id !== insp.id);
-      VIEW_STATE.inspection = null;
-      VIEW_STATE.inspectionDirty = false;
-      nav('outlets', { hotelId: VIEW_STATE.hotelId });
       return;
     }
     showConfirmModal('ยกเลิกการตรวจ?', 'ข้อมูลที่กรอกไว้จะถูกลบทิ้ง · Data will be lost', () => {
@@ -1787,7 +1700,6 @@ const ACTIONS = {
       saveData();
       const hid = VIEW_STATE.hotelId;
       VIEW_STATE.inspection = null;
-      VIEW_STATE.inspectionDirty = false;
       nav('outlets', { hotelId: hid });
     });
   },
@@ -1828,7 +1740,7 @@ const ACTIONS = {
     render();
   },
   switchTab: (d) => { VIEW_STATE.inspection.activeTab = d.tab; render(); },
-  saveDraft: () => { autoSave(); VIEW_STATE.inspectionDirty = false; toast('บันทึกร่างเรียบร้อย'); },
+  saveDraft: () => { autoSave(); toast('บันทึกร่างเรียบร้อย'); },
   finishInspection: () => finishInspection(),
   selectShift: (d) => {
     const sh = (DATA.shifts||DEFAULT_SHIFTS).find(x => x.id === d.shiftId);
@@ -1881,7 +1793,6 @@ const ACTIONS = {
     }
     // Restore inspection to editable state
     VIEW_STATE.inspection = JSON.parse(JSON.stringify(insp));
-    VIEW_STATE.inspectionDirty = false;
     VIEW_STATE.hotelId = insp.hotelId;
     VIEW_STATE.outletId = insp.outletId;
     VIEW_STATE.inspectionType = insp.type || 'main';
@@ -2244,32 +2155,67 @@ function renderOutlets() {
   const gradient = h.theme === 'baiyoke' ? 'bg-baiyoke' : 'bg-queensland';
   return `
   ${topbar()}
-  <div class="max-w-6xl mx-auto px-4 pb-16 fade-in outlets-page">
+  <div class="max-w-6xl mx-auto px-4 pb-16 fade-in">
     <button data-action="nav" data-page="home" class="btn-secondary mb-4">← กลับ · Back</button>
     <div class="${gradient} rounded-3xl p-6 mb-6" style="box-shadow:0 20px 40px rgba(0,0,0,0.15)">
       <div class="flex items-center gap-4">
         <div class="p-3 rounded-2xl" style="background:#fff;box-shadow:0 8px 20px rgba(0,0,0,0.15)"><img src="${h.logo}" class="h-14 object-contain"></div>
         <div class="text-white flex-1">
           <div class="text-2xl font-bold">${h.name}</div>
-          <div class="text-sm opacity-90">แตะปุ่มเพื่อเลือกห้องอาหาร · Tap a restaurant to inspect</div>
+          <div class="text-sm opacity-90">เลือกห้องอาหารเพื่อเริ่มตรวจ · Select restaurant to inspect</div>
         </div>
         <div class="text-4xl">${h.emoji}</div>
       </div>
     </div>
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" aria-label="Restaurant selection">
+    <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
       ${h.outlets.map(o => `
         <div class="card p-5 outlet-card">
           <div class="flex items-start justify-between mb-3">
             <div class="w-12 h-12 rounded-xl flex items-center justify-center text-2xl" style="background:${h.theme==='baiyoke'?'#fff7ed':'#f1f5f9'};color:${h.theme==='baiyoke'?'#c2410c':'#475569'}">🍴</div>
             <span class="badge" style="background:#fff7ed;color:#c2410c;border:1px solid #ffedd5">${o.floor}</span>
           </div>
-          <div class="font-bold mb-1" style="color:#1c1917;line-height:1.35">${o.name}</div>
+          <div class="font-semibold mb-1" style="color:#1c1917">${o.name}</div>
           <div class="text-xs" style="color:#78716c">📊 ${countOutletInsps(h.id,o.id)} ครั้งที่ผ่านมา</div>
-          <button type="button" data-action="pickInspectionType" data-hotel-id="${h.id}" data-outlet-id="${o.id}" class="btn-secondary outlet-start-btn w-full mt-4" style="color:#ea580c;border-color:#f1d5a5;font-weight:800">▶ เริ่มตรวจ · Start</button>
+          <div class="mt-4 pt-4" style="border-top:1px solid #f5f5f4">
+            <button type="button" data-action="pickInspectionType" data-hotel-id="${h.id}" data-outlet-id="${o.id}" class="btn-secondary outlet-start-btn w-full" style="color:#ea580c;border-color:#f1d5a5;font-weight:700">
+              ▶ เริ่มตรวจ · Start
+            </button>
+          </div>
         </div>
       `).join('')}
     </div>
   </div>`;
+}
+
+function countOutletInsps(hid, oid) {
+  return DATA.inspections.filter(i => i.hotelId===hid && i.outletId===oid && i.status==='done').length;
+}
+
+function showInspectionTypeModal(hotelId, outletId) {
+  const h = DATA.hotels.find(x => x.id === hotelId);
+  const o = h?.outlets.find(x => x.id === outletId);
+  openModal(`
+  <div class="p-6">
+    <div class="mb-6 text-center">
+      <div class="text-lg font-bold mb-1" style="color:#1c1917">เลือกประเภทการตรวจ · Select Inspection Type</div>
+      <div class="text-xs" style="color:#78716c">${o?.name} · ${o?.floor}</div>
+    </div>
+    <div class="space-y-3">
+      ${Object.entries(INSPECTION_TYPES).map(([k,t]) => `
+        <div data-action="startInspection" data-hotel-id="${hotelId}" data-outlet-id="${outletId}" data-type="${k}" class="card-hover rounded-2xl p-5 relative overflow-hidden" style="background:linear-gradient(135deg,#fb923c,#ea580c,#c2410c);color:white;cursor:pointer;box-shadow:0 12px 24px rgba(234,88,12,0.3)">
+          <div class="flex items-center gap-4">
+            <div class="text-4xl">${t.icon}</div>
+            <div class="flex-1">
+              <div class="text-lg font-bold">${t.label}</div>
+              <div class="text-xs opacity-90">${t.desc}</div>
+            </div>
+            <div class="text-2xl">→</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <button data-action="closeModal" class="btn-secondary w-full mt-4">ยกเลิก · Cancel</button>
+  </div>`);
 }
 
 // INSPECTION
@@ -2299,7 +2245,6 @@ function renderInspection() {
       shiftId: defaultShift.id,
       shift: `${defaultShift.name} · ${defaultShift.nameTh}`,
       shiftStart: defaultShift.start, shiftEnd: defaultShift.end,
-      createdAt: Date.now(), updatedAt: Date.now(),
       generalNote: '', items: {}, tables: [], activeTab: checklists[0]?.id, status: 'draft', execReview: null,
     };
     checklists.forEach(cl => cl.items.forEach(it => {
@@ -2811,26 +2756,23 @@ function calcEffectiveScore(insp) {
 function isExecFailed(insp) {
   return insp?.execReview?.status === 'rejected';
 }
-let FNB_FINISHING = false;
-async function finishInspection() {
-  if (FNB_FINISHING) return;
+function finishInspection() {
   const insp = VIEW_STATE.inspection;
-  if (!insp) return;
   const p = calcInspectionProgress(insp);
   if (p.answered === 0) { toast('กรุณาตรวจอย่างน้อย 1 หัวข้อ', 'warn'); return; }
   if (p.answered < p.total) {
     toast(`บันทึกทั้งที่ตรวจไป ${p.answered}/${p.total} ข้อ`, 'warn');
   }
-  FNB_FINISHING = true;
   const wasEditingDone = insp.status === 'done';
   insp.score = p.score;
   insp.status = 'done';
-  insp.updatedAt = Date.now();
   if (!wasEditingDone) {
-    insp.createdAt = insp.createdAt || Date.now();
     insp.completedAt = Date.now();
     insp.execReview = { status: 'pending' };
   } else {
+    insp.updatedAt = Date.now();
+    // Editing a completed inspection changes the audit result, so it must return
+    // to Pending for an executive re-check on every device.
     insp.editedAt = Date.now();
     insp.editedBy = SESSION.user.name;
     insp.execReview = {
@@ -2843,7 +2785,6 @@ async function finishInspection() {
   }
   const idx = DATA.inspections.findIndex(x => x.id === insp.id);
   if (idx >= 0) DATA.inspections[idx] = insp; else DATA.inspections.push(insp);
-
   // Auto-create complaints from table feedback (only for new inspections, to prevent duplication)
   if (!wasEditingDone && insp.tables) {
     insp.tables.filter(t => t.complaint && t.feedback).forEach(t => {
@@ -2870,29 +2811,18 @@ async function finishInspection() {
       });
     });
   }
-
   saveData();
   const done = insp.id;
-  VIEW_STATE.inspectionDirty = false;
   VIEW_STATE.inspection = null;
-  const synced = await commitCloudNow(12000);
-  if (synced) {
-    toast(wasEditingDone ? `อัปเดตแล้ว ${insp.score}% ✏️ · Cloud OK` : `บันทึกเรียบร้อย ${insp.score}% 🎉 · Cloud OK`, 'success');
-  } else {
-    toast('บันทึกในเครื่องแล้ว แต่ Cloud ยังไม่ยืนยัน · จะซิงก์อัตโนมัติเมื่อพร้อม', 'warn');
-  }
-  FNB_FINISHING = false;
+  toast(wasEditingDone ? `อัปเดตแล้ว · Updated ${insp.score}% ✏️` : `บันทึกเรียบร้อย! คะแนน ${insp.score}% 🎉`);
   nav('summary', { historyId: done });
 }
 
-let FNB_REVIEWING = false;
-async function execVerify(id, status) {
-  if (FNB_REVIEWING) return;
+function execVerify(id, status) {
   const insp = DATA.inspections.find(x => x.id === id);
-  if (!insp || insp.status !== 'done' || insp.execReview?.status !== 'pending') return;
+  if (!insp) return;
   const note = status==='rejected' ? prompt('เหตุผลที่ไม่ผ่าน:') : '';
   if (status==='rejected' && !note) return;
-  FNB_REVIEWING = true;
   insp.execReview = {
     ...(insp.execReview || {}),
     status,
@@ -2902,15 +2832,8 @@ async function execVerify(id, status) {
     note: note || '',
     items: insp.execReview?.items || {}
   };
-  insp.updatedAt = Date.now();
-  saveData();
-  const synced = await commitCloudNow(10000);
-  FNB_REVIEWING = false;
-  render();
-  toast(status==='verified'
-    ? (synced ? 'ยืนยันผ่านการตรวจซ้ำแล้ว · Cloud OK' : 'ยืนยันแล้วในเครื่อง · Cloud จะซิงก์อัตโนมัติ')
-    : (synced ? 'ไม่ผ่านการตรวจซ้ำ · Cloud OK' : 'บันทึกผลไม่ผ่านในเครื่อง · Cloud จะซิงก์อัตโนมัติ'),
-    status==='verified'?'success':'warn');
+  saveData(); render();
+  toast(status==='verified'?'ยืนยันผ่านการตรวจซ้ำแล้ว':'ไม่ผ่านการตรวจซ้ำ', status==='verified'?'success':'warn');
 }
 
 // SUMMARY
