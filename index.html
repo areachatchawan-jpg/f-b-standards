@@ -369,7 +369,8 @@ function cloudRowPayload(bucket, item) {
       if (typeof v.execPhoto === 'string' && !/^https?:\/\//i.test(v.execPhoto)) delete v.execPhoto;
       if (Array.isArray(v.execPhotos)) v.execPhotos = v.execPhotos.filter(p => typeof p === 'string' && /^https?:\/\//i.test(p));
       if (Array.isArray(v.execEvidence)) v.execEvidence = v.execEvidence.filter(x => x && typeof x.url === 'string' && /^https?:\/\//i.test(x.url)).map(x => ({
-        url: x.url, path: x.path || null, uploadedAt: x.uploadedAt || null,
+        url: x.url, path: x.path || null, storageMode: x.storageMode || 'public',
+        uploadedAt: x.uploadedAt || null,
         uploadedBy: x.uploadedBy || null, uploadedByName: x.uploadedByName || null, stage: 'executive'
       }));
     }
@@ -530,15 +531,38 @@ async function uploadPhotoToCloud(dataUrl, inspectionId, itemId, stage='manager'
   const safeStage = stage === 'executive' ? 'executive' : 'manager';
   const path = `inspections/${inspectionId}/${itemId}/${safeStage}/${uid()}.jpg`;
   const blob = dataUrlToBlob(dataUrl);
-  const { error } = await FNB_SB.storage.from(FNB_CLOUD.photoBucket).upload(path, blob, {
-    contentType: 'image/jpeg', cacheControl: '3600', upsert: false
-  });
-  if (error) throw error;
 
-  const { data } = FNB_SB.storage.from(FNB_CLOUD.photoBucket).getPublicUrl(path);
-  const publicUrl = data?.publicUrl;
+  const bucket = FNB_SB.storage.from(FNB_CLOUD.photoBucket);
+  const { error } = await bucket.upload(path, blob, {
+    contentType: 'image/jpeg',
+    cacheControl: '31536000',
+    upsert: false
+  });
+  if (error) throw new Error(`Storage upload: ${error.message || error}`);
+
+  // Preferred: permanent public URL. The setup SQL makes fnb-photos public.
+  const { data: pub } = bucket.getPublicUrl(path);
+  const publicUrl = pub?.publicUrl;
   if (!publicUrl) throw new Error('อัปโหลดแล้วแต่ไม่พบ Public URL ของรูป');
-  return { url: publicUrl, path };
+
+  // Verify the URL can actually be fetched. This catches the common case
+  // where the bucket is still private or the Storage policy was not applied.
+  try {
+    const probe = await fetch(publicUrl, { method: 'HEAD', cache: 'no-store' });
+    if (probe.ok) return { url: publicUrl, path, storageMode: 'public' };
+  } catch (_) {}
+
+  // Fallback for an accidentally-private bucket: keep the image visible now.
+  // A long-lived signed URL is only a fallback; production should use the
+  // public fnb-photos bucket configured by fnb-supabase-setup.sql.
+  try {
+    const { data: signed, error: signedError } = await bucket.createSignedUrl(path, 60 * 60 * 24 * 365);
+    if (!signedError && signed?.signedUrl) {
+      return { url: signed.signedUrl, path, storageMode: 'signed' };
+    }
+  } catch (_) {}
+
+  throw new Error('อัปโหลดสำเร็จแต่เปิดรูปไม่ได้ — ตรวจ Bucket fnb-photos ให้เป็น Public และใช้ SQL setup ล่าสุด');
 }
 
 function queuePhotoDeletion(paths) {
@@ -1869,6 +1893,30 @@ async function attachPhoto(ev, itemId) {
   const item = VIEW_STATE.inspection.items[itemId];
   if (!item.photos) item.photos = [];
   if (!item.photoEvidence) item.photoEvidence = [];
+
+  // Show the selected photo immediately so the user can see that the input
+  // actually received the file. It is replaced by the Cloud URL after upload.
+  const localPreviews = [];
+  for (const file of files) {
+    try {
+      const preview = await new Promise((resolve, reject) => {
+        compressImage(file, resolve);
+        setTimeout(() => reject(new Error('รูปใช้เวลานานเกินไป')), 30000);
+      });
+      localPreviews.push(preview);
+    } catch (_) {}
+  }
+  if (localPreviews.length) {
+    const previewBox = document.querySelector(`[data-photo-preview="${itemId}"]`);
+    if (previewBox) {
+      previewBox.style.display = 'block';
+      const row = previewBox.querySelector('.flex.gap-2.flex-wrap');
+      if (row) row.innerHTML = localPreviews.map(p => `<img src="${p}" alt="กำลังอัปโหลด" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:2px solid #d6a53a">`).join('');
+      const count = previewBox.querySelector('.text-xs');
+      if (count) count.textContent = `กำลังอัปโหลด ${localPreviews.length} รูป…`;
+    }
+  }
+
   let done = 0;
   let failed = 0;
   for (const file of files) {
@@ -1880,18 +1928,23 @@ async function attachPhoto(ev, itemId) {
       const asset = await uploadPhotoToCloud(dataUrl, VIEW_STATE.inspection.id, itemId, 'manager');
       item.photos.push(asset.url);
       item.photoEvidence.push({
-        url: asset.url, path: asset.path, stage: 'manager', uploadedAt: Date.now(),
+        url: asset.url, path: asset.path, storageMode: asset.storageMode || 'public',
+        stage: 'manager', uploadedAt: Date.now(),
         uploadedBy: SESSION.user.id, uploadedByName: SESSION.user.name
       });
       done++;
     } catch (e) {
       failed++;
       console.error('Photo upload failed', e);
+      toast(`แนบรูปไม่สำเร็จ · ${e?.message || e}`, 'warn');
     }
   }
   autoSave();
   render();
-  if (done) toast(`แนบหลักฐาน Manager แล้ว ${done} รูป · รูปจะถูกเก็บใน Cloud และเห็นได้จากประวัติ/ตรวจซ้ำ ${failed ? `· ล้มเหลว ${failed}` : ''}`);
+  if (done) {
+    const signedCount = item.photoEvidence.filter(x => x.storageMode === 'signed').length;
+    toast(`แนบหลักฐาน Manager แล้ว ${done} รูป · Cloud ${signedCount ? 'ใช้ Signed URL ชั่วคราว — ควรเปิด Public bucket' : 'พร้อมใช้งาน'}${failed ? ` · ล้มเหลว ${failed}` : ''}`, signedCount ? 'warn' : 'success');
+  }
   else toast('แนบรูปไม่สำเร็จ', 'warn');
   ev.target.value = '';
 }
@@ -1918,7 +1971,8 @@ async function attachExecPhoto(ev, itemId) {
         const asset = await uploadPhotoToCloud(dataUrl, VIEW_STATE.historyId, itemId, 'executive');
         er.execPhotos.push(asset.url);
         er.execEvidence.push({
-          url: asset.url, path: asset.path, stage: 'executive', uploadedAt: Date.now(),
+          url: asset.url, path: asset.path, storageMode: asset.storageMode || 'public',
+          stage: 'executive', uploadedAt: Date.now(),
           uploadedBy: SESSION.user.id, uploadedByName: SESSION.user.name
         });
         er.execPhoto = asset.url;
@@ -1926,6 +1980,7 @@ async function attachExecPhoto(ev, itemId) {
       } catch (e) {
         failed++;
         console.error('Executive photo upload failed', e);
+        toast(`แนบรูปตรวจซ้ำไม่สำเร็จ · ${e?.message || e}`, 'warn');
       }
     }
     saveData(); render();
