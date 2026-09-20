@@ -1,6 +1,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
-<meta name="app-build" content="2026-09-20-photo-evidence-kpi-v1">
+<meta name="app-build" content="2026-09-20-photo-evidence-kpi-final-input-fix">
 <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -961,10 +961,20 @@ document.addEventListener('pointerup', function(e) {
 document.addEventListener('submit', function(e) {
   if (e.target.id === 'login-form') { e.preventDefault(); doLogin(); }
 });
+window.__FNB_PHOTO_INPUT_FIX_V3 = true;
 document.addEventListener('change', function(e) {
-  if (e.target.dataset.photoInput) attachPhoto(e, e.target.dataset.itemId);
-  if (e.target.dataset.execPhoto) attachExecPhoto(e, e.target.dataset.itemId);
-  if (e.target.dataset.importInput) importData(e);
+  // IMPORTANT: boolean-style data attributes are present as an empty string
+  // in dataset, so checking `dataset.photoInput` for truthiness never fires.
+  // Use hasAttribute/matches instead.
+  if (e.target && e.target.tagName === 'INPUT' && e.target.hasAttribute('data-photo-input')) {
+    attachPhoto(e, e.target.dataset.itemId);
+    return;
+  }
+  if (e.target && e.target.tagName === 'INPUT' && e.target.hasAttribute('data-exec-photo')) {
+    attachExecPhoto(e, e.target.dataset.itemId);
+    return;
+  }
+  if (e.target && e.target.tagName === 'INPUT' && e.target.hasAttribute('data-import-input')) importData(e);
   const df = e.target.dataset.dfield;
   if (df === 'date') { VIEW_STATE.dailyDate = e.target.value; render(); }
   if (df === 'outlet') { VIEW_STATE.dailyOutlet = e.target.value; render(); }
