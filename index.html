@@ -347,7 +347,12 @@ async function cloudLoadState() {
 }
 
 function cloudRowPayload(bucket, item) {
+  // A new inspection may have no cached previous row yet.
+  // Guard null/undefined so cloud sync never crashes with:
+  // "Cannot read properties of null (reading 'items')"
+  if (item === null || item === undefined) return item;
   let payload = JSON.parse(JSON.stringify(item));
+  if (!payload || typeof payload !== 'object') return payload;
   // Photos should be Supabase Storage URLs; never push large inline data URLs to the database.
   if (payload.items) {
     for (const v of Object.values(payload.items)) {
@@ -519,7 +524,9 @@ function getExecEvidence(er) {
 }
 
 async function uploadPhotoToCloud(dataUrl, inspectionId, itemId, stage='manager') {
-  if (!FNB_CLOUD_READY || !FNB_SB) return { url: dataUrl, path: null };
+  if (!FNB_CLOUD_READY || !FNB_SB) {
+    throw new Error('Cloud ยังไม่พร้อม — กรุณารอให้ขึ้นว่า Cloud พร้อมใช้งาน');
+  }
   const safeStage = stage === 'executive' ? 'executive' : 'manager';
   const path = `inspections/${inspectionId}/${itemId}/${safeStage}/${uid()}.jpg`;
   const blob = dataUrlToBlob(dataUrl);
@@ -527,8 +534,11 @@ async function uploadPhotoToCloud(dataUrl, inspectionId, itemId, stage='manager'
     contentType: 'image/jpeg', cacheControl: '3600', upsert: false
   });
   if (error) throw error;
+
   const { data } = FNB_SB.storage.from(FNB_CLOUD.photoBucket).getPublicUrl(path);
-  return { url: data.publicUrl, path };
+  const publicUrl = data?.publicUrl;
+  if (!publicUrl) throw new Error('อัปโหลดแล้วแต่ไม่พบ Public URL ของรูป');
+  return { url: publicUrl, path };
 }
 
 function queuePhotoDeletion(paths) {
@@ -1787,7 +1797,7 @@ function renderInspectionItem(item, insp, idx) {
     </div>
     <div data-photo-preview="${item.id}" style="${val.photos.length?'':'display:none;'}margin-top:10px">
       <div class="flex gap-2 flex-wrap">
-        ${val.photos.map((p,i) => `<div class="relative inline-block"><img src="${p}" style="height:80px;border-radius:8px;border:1px solid #ecdcb7"><button data-action="removePhoto" data-item-id="${item.id}" data-photo-idx="${i}" style="position:absolute;top:-8px;right:-8px;width:24px;height:24px;background:#dc2626;color:white;border:0;border-radius:50%;cursor:pointer;font-size:11px">✕</button></div>`).join('')}
+        ${val.photos.map((p,i) => `<div class="relative inline-block" style="width:80px"><img src="${p}" alt="หลักฐาน" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid #ecdcb7;background:#f7f4ec" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div style="display:none;width:80px;height:80px;border-radius:8px;border:1px solid #e5d6b8;background:#f7f4ec;align-items:center;justify-content:center;text-align:center;font-size:10px;color:#8b6820;padding:4px">โหลดภาพไม่ได้</div><button data-action="removePhoto" data-item-id="${item.id}" data-photo-idx="${i}" style="position:absolute;top:-8px;right:-8px;width:24px;height:24px;background:#dc2626;color:white;border:0;border-radius:50%;cursor:pointer;font-size:11px">✕</button></div>`).join('')}
       </div>
       ${val.photos.length>0 ? `<div class="text-xs mt-1" style="color:#5c5138">${val.photos.length} รูป · photos</div>`:''}
     </div>
@@ -1881,7 +1891,7 @@ async function attachPhoto(ev, itemId) {
   }
   autoSave();
   render();
-  if (done) toast(`แนบหลักฐาน Manager แล้ว ${done} รูป · ${failed ? `ล้มเหลว ${failed}` : 'Cloud synced'}`);
+  if (done) toast(`แนบหลักฐาน Manager แล้ว ${done} รูป · รูปจะถูกเก็บใน Cloud และเห็นได้จากประวัติ/ตรวจซ้ำ ${failed ? `· ล้มเหลว ${failed}` : ''}`);
   else toast('แนบรูปไม่สำเร็จ', 'warn');
   ev.target.value = '';
 }
