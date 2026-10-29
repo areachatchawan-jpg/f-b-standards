@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
-<meta name="app-build" content="2026-09-20-antibounce">
+<meta name="app-build" content="2026-10-29-multidevice-sync-v2">
 <meta name="theme-color" content="#b8892f">
 <meta name="format-detection" content="telephone=no">
 <meta name="mobile-web-app-capable" content="yes">
@@ -511,6 +511,131 @@ function scheduleCloudReconnect() {
   FNB_RECONNECT_TIMER = setTimeout(() => { if (!FNB_CLOUD_READY) initCloud(); }, wait);
 }
 
+/* ===================== SYNC-V2: multi-device safe sync =====================
+   - Tracks local edits (dirty set) and deletions (tombstones) explicitly, persisted in localStorage
+   - FNB_CLOUD_CACHE = exactly what the cloud holds (never local-only data)
+   - Per-checklist-item timestamps (_u) so two devices editing the same inspection merge instead of overwrite
+   - Refresh/realtime never discard unsent local edits                                                  */
+const SYNC_KEYS = { dirty: STORAGE_KEY + ':sync:dirty', del: STORAGE_KEY + ':sync:deleted', seen: STORAGE_KEY + ':sync:seen' };
+function syncRead(k, def) { try { const v = JSON.parse(localStorage.getItem(k) || 'null'); return v === null ? def : v; } catch (_) { return def; } }
+function syncWrite(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
+let SYNC_DIRTY = new Set(syncRead(SYNC_KEYS.dirty, []));
+let SYNC_DEL = new Set(syncRead(SYNC_KEYS.del, []));
+let SYNC_SEEN = syncRead(SYNC_KEYS.seen, null);           // null = first run on this device
+const SYNC_SNAP = new Map();                              // key -> hash of last known local version
+const SYNC_PREV = new Map();                              // key -> deep copy of last saved local version (only changed items)
+const SYNC_BUCKETS = ['inspections', 'complaints'];
+function syncPersist() {
+  syncWrite(SYNC_KEYS.dirty, [...SYNC_DIRTY]);
+  syncWrite(SYNC_KEYS.del, [...SYNC_DEL]);
+  if (SYNC_SEEN !== null) syncWrite(SYNC_KEYS.seen, SYNC_SEEN);
+  FNB_CONN.pendingItems = SYNC_DIRTY.size + SYNC_DEL.size;
+}
+function syncHash(str) { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return h; }
+function syncItemHash(x) { try { return syncHash(JSON.stringify(x)); } catch (_) { return 0; } }
+function syncTs(x) { return Number((x && (x.updatedAt || x.completedAt || x.createdAt)) || 0) || 0; }
+function syncClone(x) { return x === undefined ? undefined : JSON.parse(JSON.stringify(x)); }
+function syncNoU(e) { if (!e || typeof e !== 'object') return JSON.stringify(e); const c = { ...e }; delete c._u; return JSON.stringify(c); }
+function syncAssignInPlace(target, src) {
+  if (!target || !src || target === src) return target;
+  Object.keys(target).forEach(k => { delete target[k]; });
+  Object.assign(target, syncClone(src));
+  return target;
+}
+function syncSeenSet() { return new Set(SYNC_SEEN || []); }
+function syncSeenAdd(key) { if (SYNC_SEEN === null) SYNC_SEEN = []; if (!SYNC_SEEN.includes(key)) SYNC_SEEN.push(key); }
+function syncSeenDel(key) { if (SYNC_SEEN) SYNC_SEEN = SYNC_SEEN.filter(k => k !== key); }
+function syncSnapReset() {
+  SYNC_SNAP.clear(); SYNC_PREV.clear();
+  for (const b of SYNC_BUCKETS) for (const x of (DATA[b] || [])) if (x && x.id) SYNC_SNAP.set(b + '|' + x.id, syncItemHash(x));
+}
+function syncSnapSet(b, x) { if (x && x.id) { SYNC_SNAP.set(b + '|' + x.id, syncItemHash(x)); SYNC_PREV.delete(b + '|' + x.id); } }
+
+// stamp entry-level times on a locally changed inspection
+function syncStampEntries(cur, prev, now) {
+  if (!cur || typeof cur !== 'object') return;
+  for (const k of Object.keys(cur)) {
+    const e = cur[k]; if (!e || typeof e !== 'object') continue;
+    const pe = prev ? prev[k] : undefined;
+    if (!pe || syncNoU(e) !== syncNoU(pe)) e._u = now;
+  }
+}
+function syncStampInspection(x, prev, now) {
+  x.updatedAt = now;
+  syncStampEntries(x.items, prev && prev.items, now);
+  if (x.execReview && typeof x.execReview === 'object') {
+    syncStampEntries(x.execReview.items, prev && prev.execReview && prev.execReview.items, now);
+    const strip = er => { if (!er) return ''; const c = { ...er }; delete c.items; delete c._u; return JSON.stringify(c); };
+    if (!prev || strip(x.execReview) !== strip(prev.execReview)) x.execReview._u = now;
+  }
+  if (Array.isArray(x.tables)) {
+    const pm = new Map(((prev && prev.tables) || []).map(t => [t && t.id, t]));
+    x.tables.forEach(t => { if (t && typeof t === 'object') { const pt = pm.get(t.id); if (!pt || syncNoU(t) !== syncNoU(pt)) t._u = now; } });
+  }
+}
+// called from saveData(): detect what THIS device changed since last save
+function syncTrack() {
+  const now = Date.now();
+  for (const b of SYNC_BUCKETS) {
+    const list = DATA[b] || [];
+    const present = new Set();
+    for (const x of list) {
+      if (!x || !x.id) continue;
+      if (b === 'inspections' && typeof isLoadTestInspection === 'function' && isLoadTestInspection(x)) continue;
+      const key = b + '|' + x.id; present.add(key);
+      const h = syncItemHash(x);
+      if (SYNC_SNAP.get(key) === h) continue;
+      const prev = SYNC_PREV.get(key) || (FNB_CLOUD_CACHE[b] && FNB_CLOUD_CACHE[b].get(x.id)) || null;
+      if (b === 'inspections') syncStampInspection(x, prev, now); else x.updatedAt = now;
+      SYNC_SNAP.set(key, syncItemHash(x));
+      SYNC_PREV.set(key, syncClone(x));
+      SYNC_DIRTY.add(key); SYNC_DEL.delete(key);
+    }
+    for (const key of [...SYNC_SNAP.keys()]) {
+      if (!key.startsWith(b + '|') || present.has(key)) continue;
+      SYNC_SNAP.delete(key); SYNC_PREV.delete(key); SYNC_DIRTY.delete(key);
+      const id = key.slice(b.length + 1);
+      if (syncSeenSet().has(key) || (FNB_CLOUD_CACHE[b] && FNB_CLOUD_CACHE[b].has(id))) SYNC_DEL.add(key);
+    }
+  }
+  syncPersist();
+}
+function syncMergeEntries(a, b, preferA) {
+  const out = {}; const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  for (const k of keys) {
+    const ea = a ? a[k] : undefined, eb = b ? b[k] : undefined;
+    if (ea === undefined) { out[k] = eb; continue; }
+    if (eb === undefined) { out[k] = ea; continue; }
+    const ua = Number((ea && ea._u) || 0), ub = Number((eb && eb._u) || 0);
+    out[k] = ua > ub ? ea : ub > ua ? eb : (preferA ? ea : eb);
+  }
+  return out;
+}
+// Merge two versions of one inspection: newest checklist item wins item-by-item
+function mergeInspection(L, R) {
+  if (!L) return syncClone(R); if (!R) return syncClone(L);
+  const lNew = syncTs(L) >= syncTs(R);
+  const top = syncClone(lNew ? L : R);
+  top.items = syncClone(syncMergeEntries(L.items, R.items, lNew));
+  const le = L.execReview, re = R.execReview;
+  if (le || re) {
+    const eu = x => Number((x && (x._u || x.reviewedAt)) || 0);
+    const base = !le ? re : !re ? le : (eu(le) > eu(re) || (eu(le) === eu(re) && lNew)) ? le : re;
+    const er = syncClone(base) || {};
+    er.items = syncClone(syncMergeEntries(le && le.items, re && re.items, lNew));
+    top.execReview = er;
+  }
+  if (Array.isArray(L.tables) || Array.isArray(R.tables)) {
+    const m = new Map();
+    for (const t of (R.tables || [])) if (t) m.set(t.id, t);
+    for (const t of (L.tables || [])) { if (!t) continue; const o = m.get(t.id); if (!o || Number(t._u || 0) >= Number(o._u || 0)) m.set(t.id, t); }
+    top.tables = syncClone([...m.values()]);
+  }
+  top.updatedAt = Math.max(syncTs(L), syncTs(R));
+  return top;
+}
+function syncMergeItem(b, L, R) { return b === 'inspections' ? mergeInspection(L, R) : (syncTs(L) >= syncTs(R) ? syncClone(L) : syncClone(R)); }
+
 function cloudTimestamp(item, fallback=0) {
   if (!item) return fallback;
   const n = Number(item.updatedAt || item.createdAt || 0);
@@ -519,6 +644,8 @@ function cloudTimestamp(item, fallback=0) {
 
 function remoteTimestamp(row) {
   if (!row) return 0;
+  const appTs = cloudTimestamp(row.payload, 0);
+  if (appTs) return appTs;
   const parsed = Date.parse(row.updated_at || '');
   if (Number.isFinite(parsed)) return parsed;
   return cloudTimestamp(row.payload, 0);
@@ -568,19 +695,24 @@ async function cloudLoadStateRaw() {
   FNB_FRESH_DB = (cfgRows.length === 0 && cloudIns.length === 0 && cloudComp.length === 0);
   if (FNB_FRESH_DB) {
     FNB_CLOUD_CACHE.config = {};
-    CONFIG_SECTIONS.forEach(s => { FNB_CLOUD_CACHE.config[s] = JSON.parse(JSON.stringify(configSectionValue(s))); });
-    FNB_CLOUD_CACHE.inspections = new Map((DATA.inspections || []).map(x => [x.id, JSON.parse(JSON.stringify(x))]));
-    FNB_CLOUD_CACHE.complaints = new Map((DATA.complaints || []).map(x => [x.id, JSON.parse(JSON.stringify(x))]));
+    FNB_CLOUD_CACHE.inspections = new Map();
+    FNB_CLOUD_CACHE.complaints = new Map();
+    for (const b of SYNC_BUCKETS) for (const x of (DATA[b] || [])) if (x && x.id && !(b === 'inspections' && isLoadTestInspection(x))) SYNC_DIRTY.add(b + '|' + x.id);
+    if (SYNC_SEEN === null) SYNC_SEEN = [];
+    syncSnapReset(); syncPersist();
     return;
   }
 
   // รองรับทั้งรูปแบบเดิม (config/state แถวเดียว) และรูปแบบใหม่ (แยกแถวต่อหัวข้อ)
+  const prevCfgCache = FNB_CLOUD_CACHE.config || {};
+  const cfgLocalPending = s => prevCfgCache[s] !== undefined && jsonStable(configSectionValue(s)) !== jsonStable(prevCfgCache[s]);
+  const pendingCfg = new Set(CONFIG_SECTIONS.filter(cfgLocalPending));
   FNB_CLOUD_CACHE.config = {};
   const legacy = cfgRows.find(r => r.item_id === 'state');
   if (legacy?.payload) {
     CONFIG_SECTIONS.forEach(s => {
       if (legacy.payload[s] !== undefined) {
-        applyConfigSection(s, legacy.payload[s]);
+        if (!pendingCfg.has(s)) applyConfigSection(s, legacy.payload[s]);
         FNB_CLOUD_CACHE.config[s] = JSON.parse(JSON.stringify(legacy.payload[s]));
       }
     });
@@ -588,37 +720,51 @@ async function cloudLoadStateRaw() {
   for (const r of cfgRows) {
     if (!CONFIG_SECTIONS.includes(r.item_id)) continue;
     const v = r.payload && r.payload.v !== undefined ? r.payload.v : r.payload;
-    applyConfigSection(r.item_id, v);
+    if (!pendingCfg.has(r.item_id)) applyConfigSection(r.item_id, v);
     FNB_CLOUD_CACHE.config[r.item_id] = JSON.parse(JSON.stringify(v));
   }
+  if (pendingCfg.size) setTimeout(() => scheduleCloudSync(), 0);
 
   const cloudInsRows = new Map(cloudIns.map(r => [r.item_id, r]));
   const cloudCompRows = new Map(cloudComp.map(r => [r.item_id, r]));
-  const localIns = new Map((DATA.inspections || []).filter(x => !isLoadTestInspection(x)).map(x => [x.id, x]));
-  const localComp = new Map((DATA.complaints || []).map(x => [x.id, x]));
-
-  const mergedIns = new Map();
-  const mergedComp = new Map();
-
-  for (const id of new Set([...localIns.keys(), ...cloudInsRows.keys()])) {
-    const chosen = chooseNewestCloudRow(localIns.get(id), cloudInsRows.get(id));
-    if (chosen?.value) mergedIns.set(id, chosen.value);
-  }
-
-  for (const id of new Set([...localComp.keys(), ...cloudCompRows.keys()])) {
-    const chosen = chooseNewestCloudRow(localComp.get(id), cloudCompRows.get(id));
-    if (chosen?.value) mergedComp.set(id, chosen.value);
-  }
-
-  DATA.inspections = Array.from(mergedIns.values());
+  // cache = exactly what the cloud holds
+  FNB_CLOUD_CACHE.inspections = new Map(cloudIns.map(r => [r.item_id, syncClone(r.payload)]));
+  FNB_CLOUD_CACHE.complaints = new Map(cloudComp.map(r => [r.item_id, syncClone(r.payload)]));
+  const firstRun = SYNC_SEEN === null;
+  const seen = syncSeenSet();
+  const mergeBucket = (b, rowsMap, localList) => {
+    const out = [];
+    const localMap = new Map(localList.filter(x => x && x.id).map(x => [x.id, x]));
+    for (const id of new Set([...localMap.keys(), ...rowsMap.keys()])) {
+      const key = b + '|' + id;
+      const L = localMap.get(id); const R = rowsMap.get(id)?.payload;
+      if (L && R) {
+        if (SYNC_DIRTY.has(key)) syncAssignInPlace(L, syncMergeItem(b, L, R));
+        else syncAssignInPlace(L, R);
+        out.push(L);
+      } else if (R) {
+        if (SYNC_DEL.has(key)) continue;           // deleted here, delete is still being sent
+        out.push(syncClone(R));
+      } else if (L) {
+        if (SYNC_DIRTY.has(key)) out.push(L);      // made here, not uploaded yet
+        else if (firstRun) { out.push(L); if (Date.now() - syncTs(L) < 7 * 864e5) SYNC_DIRTY.add(key); }
+        else if (seen.has(key)) { /* deleted on another device */ }
+        else { out.push(L); SYNC_DIRTY.add(key); }
+      }
+    }
+    return out;
+  };
+  DATA.inspections = mergeBucket('inspections', cloudInsRows, (DATA.inspections || []).filter(x => !isLoadTestInspection(x)));
   DATA.inspections.forEach(i => {
+    if (!i.tables) i.tables = [];
     if (i.status === 'done' && (!i.execReview || !i.execReview.status)) {
-      i.execReview = { status: 'pending' };
+      i.execReview = { ...(i.execReview || {}), status: 'pending' };
     }
   });
-  DATA.complaints = Array.from(mergedComp.values());
-  FNB_CLOUD_CACHE.inspections = new Map(DATA.inspections.map(x => [x.id, JSON.parse(JSON.stringify(x))]));
-  FNB_CLOUD_CACHE.complaints = new Map(DATA.complaints.map(x => [x.id, JSON.parse(JSON.stringify(x))]));
+  DATA.complaints = mergeBucket('complaints', cloudCompRows, DATA.complaints || []);
+  SYNC_SEEN = [...cloudIns.map(r => 'inspections|' + r.item_id), ...cloudComp.map(r => 'complaints|' + r.item_id)];
+  syncSnapReset();
+  syncPersist();
 }
 
 // เรียกหลังโหลดสำเร็จเท่านั้น
@@ -634,13 +780,14 @@ async function cloudAfterLoad() {
 let FNB_CLOUD_REFRESHING = false;
 let FNB_CLOUD_REFRESH_TIMER = null;
 async function refreshCloudFromServer(reason = 'manual') {
-  if (!FNB_CLOUD_READY || !FNB_SB || FNB_CLOUD_REFRESHING) return false;
+  if (!FNB_CLOUD_READY || !FNB_SB || FNB_CLOUD_REFRESHING || FNB_CLOUD_SYNCING) return false;
   if (!navigator.onLine) return false;
   FNB_CLOUD_REFRESHING = true;
   try {
     await withRetry(() => cloudLoadStateRaw(), 3, `cloudRefresh:${reason}`);
     FNB_CONN.lastSyncAt = Date.now();
     saveDataLocalOnly();
+    if (SYNC_DIRTY.size || SYNC_DEL.size) scheduleCloudSync();
     if (VIEW_STATE.page !== 'inspection') softRender();
     return true;
   } catch (e) {
@@ -774,50 +921,72 @@ async function cloudSyncNow(force = false) {
       }
     }
 
-    const currentIns = new Map((DATA.inspections || []).map(x => [x.id, x]));
-    for (const [id, item] of currentIns) {
-      const clean = cloudRowPayload('inspections', item);
-      const prev = FNB_CLOUD_CACHE.inspections.get(id);
-      if (force || jsonStable(clean) !== jsonStable(cloudRowPayload('inspections', prev || null))) {
-        upserts.push({ bucket: 'inspections', item_id: id, payload: clean });
-      }
-    }
-    const deletesIns = [];
-    for (const id of FNB_CLOUD_CACHE.inspections.keys()) if (!currentIns.has(id)) deletesIns.push(id);
-
-    const currentComp = new Map((DATA.complaints || []).map(x => [x.id, x]));
-    for (const [id, item] of currentComp) {
-      const clean = JSON.parse(JSON.stringify(item));
-      const prev = FNB_CLOUD_CACHE.complaints.get(id);
-      if (force || jsonStable(clean) !== jsonStable(prev || null)) {
-        upserts.push({ bucket: 'complaints', item_id: id, payload: clean });
-      }
-    }
-    const deletesComp = [];
-    for (const id of FNB_CLOUD_CACHE.complaints.keys()) if (!currentComp.has(id)) deletesComp.push(id);
-
     for (let i = 0; i < upserts.length; i += 100) {
       const chunk = upserts.slice(i, i + 100);
       const { error } = await FNB_SB.from(FNB_CLOUD.table).upsert(chunk, { onConflict: 'bucket,item_id' });
       if (error) throw error;
       await verifyCloudRows(chunk);
     }
-
-    if (deletesIns.length) {
-      const { error } = await FNB_SB.from(FNB_CLOUD.table).delete().eq('bucket', 'inspections').in('item_id', deletesIns);
-      if (error) throw error;
-      await verifyCloudDeletes('inspections', deletesIns);
-    }
-
-    if (deletesComp.length) {
-      const { error } = await FNB_SB.from(FNB_CLOUD.table).delete().eq('bucket', 'complaints').in('item_id', deletesComp);
-      if (error) throw error;
-      await verifyCloudDeletes('complaints', deletesComp);
-    }
-
     FNB_CLOUD_CACHE.config = cfgSnapshot;
-    FNB_CLOUD_CACHE.inspections = new Map(currentIns);
-    FNB_CLOUD_CACHE.complaints = new Map(currentComp);
+
+    // ---- records changed on THIS device (dirty) ----
+    for (const b of SYNC_BUCKETS) {
+      const want = [];
+      for (const key of [...SYNC_DIRTY]) {
+        if (!key.startsWith(b + '|')) continue;
+        const id = key.slice(b.length + 1);
+        const item = (DATA[b] || []).find(x => x.id === id);
+        if (!item || (b === 'inspections' && isLoadTestInspection(item))) { SYNC_DIRTY.delete(key); continue; }
+        want.push(item);
+      }
+      if (force) for (const x of (DATA[b] || [])) if (x && x.id && !want.includes(x) && !(b === 'inspections' && isLoadTestInspection(x))) want.push(x);
+      for (let i = 0; i < want.length; i += 50) {
+        const chunkItems = want.slice(i, i + 50);
+        // conflict check: did another device change these since we last saw them?
+        const { data: remoteRows, error: rErr } = await FNB_SB.from(FNB_CLOUD.table)
+          .select('item_id,payload,updated_at').eq('bucket', b).in('item_id', chunkItems.map(x => x.id));
+        if (rErr) throw rErr;
+        const remote = new Map((remoteRows || []).map(r => [r.item_id, r]));
+        const rows = []; const startHash = new Map();
+        for (const item of chunkItems) {
+          const key = b + '|' + item.id;
+          const R = remote.get(item.id)?.payload;
+          const base = FNB_CLOUD_CACHE[b].get(item.id);
+          if (R && jsonStable(R) !== jsonStable(base === undefined ? null : base)) {
+            const merged = syncMergeItem(b, item, R);
+            syncAssignInPlace(item, merged);
+            syncSnapSet(b, item);
+            if (b === 'complaints' && syncTs(R) > syncTs(item)) { FNB_CLOUD_CACHE[b].set(item.id, syncClone(R)); SYNC_DIRTY.delete(key); continue; }
+          }
+          startHash.set(item.id, syncItemHash(item));
+          rows.push({ bucket: b, item_id: item.id, payload: b === 'inspections' ? cloudRowPayload('inspections', item) : syncClone(item) });
+        }
+        if (!rows.length) continue;
+        const { error } = await FNB_SB.from(FNB_CLOUD.table).upsert(rows, { onConflict: 'bucket,item_id' });
+        if (error) throw error;
+        await verifyCloudRows(rows);
+        for (const r of rows) {
+          const key = b + '|' + r.item_id;
+          FNB_CLOUD_CACHE[b].set(r.item_id, syncClone(r.payload));
+          syncSeenAdd(key);
+          const item = (DATA[b] || []).find(x => x.id === r.item_id);
+          if (!item || syncItemHash(item) === startHash.get(r.item_id)) SYNC_DIRTY.delete(key);
+        }
+      }
+    }
+
+    // ---- deletions made on THIS device ----
+    for (const b of SYNC_BUCKETS) {
+      const ids = [...SYNC_DEL].filter(k => k.startsWith(b + '|')).map(k => k.slice(b.length + 1));
+      for (let i = 0; i < ids.length; i += 100) {
+        const chunk = ids.slice(i, i + 100);
+        const { error } = await FNB_SB.from(FNB_CLOUD.table).delete().eq('bucket', b).in('item_id', chunk);
+        if (error) throw error;
+        await verifyCloudDeletes(b, chunk);
+        chunk.forEach(id => { SYNC_DEL.delete(b + '|' + id); syncSeenDel(b + '|' + id); FNB_CLOUD_CACHE[b].delete(id); });
+      }
+    }
+    syncPersist();
     FNB_CONN.lastSyncAt = Date.now();
     FNB_RECONNECT_TRIES = 0;
     if (FNB_CONN.state !== 'online') setConn('online');
@@ -900,7 +1069,9 @@ function applyCloudRealtime(payload) {
     if (payload.eventType === 'DELETE') return;
     if (CONFIG_SECTIONS.includes(row.item_id)) {
       const v = row.payload && row.payload.v !== undefined ? row.payload.v : row.payload;
-      applyConfigSection(row.item_id, v);
+      const prevC = FNB_CLOUD_CACHE.config && FNB_CLOUD_CACHE.config[row.item_id];
+      const localPending = prevC !== undefined && jsonStable(configSectionValue(row.item_id)) !== jsonStable(prevC);
+      if (!localPending) applyConfigSection(row.item_id, v);
       if (!FNB_CLOUD_CACHE.config) FNB_CLOUD_CACHE.config = {};
       FNB_CLOUD_CACHE.config[row.item_id] = JSON.parse(JSON.stringify(v));
       requestLocalSave();
@@ -919,38 +1090,22 @@ function applyCloudRealtime(payload) {
     requestLocalSave();
     requestRealtimeRender();
     return;
-  } else if (row.bucket === 'inspections') {
-    const id = row.item_id;
+  } else if (row.bucket === 'inspections' || row.bucket === 'complaints') {
+    const b = row.bucket, id = row.item_id, key = b + '|' + id;
+    if (b === 'inspections' && (String(id).startsWith('LOADTEST_') || row.payload?.testRun)) return;
+    const list = DATA[b] || (DATA[b] = []);
     if (payload.eventType === 'DELETE') {
-      DATA.inspections = DATA.inspections.filter(x => x.id !== id);
-      FNB_CLOUD_CACHE.inspections.delete(id);
+      FNB_CLOUD_CACHE[b].delete(id); syncSeenDel(key);
+      if (!SYNC_DIRTY.has(key)) { DATA[b] = list.filter(x => x.id !== id); SYNC_SNAP.delete(key); SYNC_PREV.delete(key); }
     } else {
-      const item = row.payload;
-      const local = DATA.inspections.find(x => x.id === id);
-      const remoteTs = remoteTimestamp(row);
-      const localTs = cloudTimestamp(local);
-      if (!local || remoteTs >= localTs) {
-        const idx = DATA.inspections.findIndex(x => x.id === id);
-        if (idx >= 0) DATA.inspections[idx] = item; else DATA.inspections.push(item);
-        FNB_CLOUD_CACHE.inspections.set(id, JSON.parse(JSON.stringify(item)));
-      }
+      const R = row.payload; if (!R) return;
+      FNB_CLOUD_CACHE[b].set(id, syncClone(R)); syncSeenAdd(key);
+      const local = list.find(x => x.id === id);
+      if (!local) { if (!SYNC_DEL.has(key)) { const c = syncClone(R); list.push(c); syncSnapSet(b, c); } }
+      else if (SYNC_DIRTY.has(key)) { syncAssignInPlace(local, syncMergeItem(b, local, R)); syncSnapSet(b, local); scheduleCloudSync(); }
+      else { syncAssignInPlace(local, R); syncSnapSet(b, local); }
     }
-  } else if (row.bucket === 'complaints') {
-    const id = row.item_id;
-    if (payload.eventType === 'DELETE') {
-      DATA.complaints = DATA.complaints.filter(x => x.id !== id);
-      FNB_CLOUD_CACHE.complaints.delete(id);
-    } else {
-      const item = row.payload;
-      const local = DATA.complaints.find(x => x.id === id);
-      const remoteTs = remoteTimestamp(row);
-      const localTs = cloudTimestamp(local);
-      if (!local || remoteTs >= localTs) {
-        const idx = DATA.complaints.findIndex(x => x.id === id);
-        if (idx >= 0) DATA.complaints[idx] = item; else DATA.complaints.push(item);
-        FNB_CLOUD_CACHE.complaints.set(id, JSON.parse(JSON.stringify(item)));
-      }
-    }
+    syncPersist();
   }
   requestLocalSave();
   // รวบรอบการวาดหน้าจอ และไม่ขัดจังหวะตอนกำลังตรวจหรือกำลังพิมพ์
@@ -1073,16 +1228,59 @@ async function uploadPhotoToCloud(dataUrl, inspectionId, itemId, stage='manager'
    เดิม: ถ่ายรูปแล้วอัปโหลดทันที ถ้าเน็ตสะดุดคือรูปหายเลย ต้องถ่ายใหม่
    ใหม่: เก็บรูปที่ย่อแล้วไว้ในเครื่อง แล้วส่งให้เองเมื่อเน็ตกลับมา       */
 const PHOTO_QUEUE_KEY = `${STORAGE_KEY}:photoQueue`;
-const PHOTO_QUEUE_MAX = 40;
+const PHOTO_QUEUE_MAX = 500;
 
-function readPhotoQueue() {
-  try { const q = JSON.parse(localStorage.getItem(PHOTO_QUEUE_KEY) || '[]'); return Array.isArray(q) ? q : []; }
-  catch (_) { return []; }
+// คิวรูปเก็บใน IndexedDB (จุได้มากกว่า localStorage หลายเท่า และใช้ได้ทั้ง iOS / Android / คอม)
+const PQ = { db: null, mem: [], ready: false };
+function pqOpen() {
+  return new Promise(res => {
+    try {
+      if (!window.indexedDB) return res(null);
+      const r = indexedDB.open('fnb_photo_queue', 1);
+      r.onupgradeneeded = () => { try { r.result.createObjectStore('q', { keyPath: 'qid' }); } catch (_) {} };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => res(null);
+      r.onblocked = () => res(null);
+      setTimeout(() => res(null), 4000);
+    } catch (_) { res(null); }
+  });
 }
+function pqTx(mode, fn) {
+  return new Promise(res => {
+    try { const tx = PQ.db.transaction('q', mode); const st = tx.objectStore('q'); const out = fn(st); tx.oncomplete = () => res(out && out.result !== undefined ? out.result : true); tx.onerror = () => res(null); tx.onabort = () => res(null); }
+    catch (_) { res(null); }
+  });
+}
+async function pqInit() {
+  if (PQ.ready) return;
+  let legacy = [];
+  try { legacy = JSON.parse(localStorage.getItem(PHOTO_QUEUE_KEY) || '[]'); if (!Array.isArray(legacy)) legacy = []; } catch (_) {}
+  PQ.db = await pqOpen();
+  if (PQ.db) {
+    const all = await pqTx('readonly', st => st.getAll());
+    PQ.mem = Array.isArray(all) ? all.sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
+    for (const e of legacy) if (e && e.qid && !PQ.mem.some(x => x.qid === e.qid)) { PQ.mem.push(e); await pqTx('readwrite', st => st.put(e)); }
+    try { localStorage.removeItem(PHOTO_QUEUE_KEY); } catch (_) {}
+  } else {
+    PQ.mem = legacy;
+  }
+  PQ.ready = true;
+  FNB_CONN.pendingPhotos = PQ.mem.length;
+  paintConnChip();
+}
+function readPhotoQueue() { return PQ.mem.slice(); }
 function writePhotoQueue(q) {
-  try { localStorage.setItem(PHOTO_QUEUE_KEY, JSON.stringify(q.slice(-PHOTO_QUEUE_MAX))); }
-  catch (_) { try { localStorage.setItem(PHOTO_QUEUE_KEY, JSON.stringify(q.slice(-10))); } catch (__) {} }
-  FNB_CONN.pendingPhotos = q.length;
+  const keep = new Set(q.map(x => x.qid));
+  const removed = PQ.mem.filter(x => !keep.has(x.qid));
+  const added = q.filter(x => !PQ.mem.some(m => m.qid === x.qid));
+  PQ.mem = q.slice(-PHOTO_QUEUE_MAX);
+  if (PQ.db) {
+    pqTx('readwrite', st => { removed.forEach(x => st.delete(x.qid)); added.forEach(x => st.put(x)); });
+  } else {
+    try { localStorage.setItem(PHOTO_QUEUE_KEY, JSON.stringify(PQ.mem.slice(-40))); }
+    catch (_) { try { localStorage.setItem(PHOTO_QUEUE_KEY, JSON.stringify(PQ.mem.slice(-10))); } catch (__) {} }
+  }
+  FNB_CONN.pendingPhotos = PQ.mem.length;
   paintConnChip();
 }
 function enqueuePhoto(entry) {
@@ -1096,6 +1294,7 @@ function pendingPhotosFor(inspectionId, itemId, stage) {
 
 let FNB_PHOTO_QUEUE_RUNNING = false;
 async function flushPhotoQueue() {
+  if (!PQ.ready) await pqInit();
   if (FNB_PHOTO_QUEUE_RUNNING || !FNB_CLOUD_READY || !FNB_SB) return;
   let q = readPhotoQueue();
   if (!q.length) { FNB_CONN.pendingPhotos = 0; paintConnChip(); return; }
@@ -1186,7 +1385,10 @@ function compactExpiredInspectionPhotos() {
   const cutoff = Date.now() - days * 86400000;
   const paths = [];
   (DATA.inspections || []).forEach(i => {
-    if ((i.completedAt || 0) >= cutoff || !i.items || i._compacted) return;
+    // เดิมใช้ (completedAt || 0) ทำให้ใบที่ยังตรวจไม่เสร็จ (ยังไม่มี completedAt) ถูกล้างรูปทันทีหลังแนบ
+    if (i.status !== 'done') return;
+    const doneAt = Number(i.completedAt || i.updatedAt || i.createdAt || Date.now());
+    if (doneAt >= cutoff || !i.items || i._compacted) return;
     let managerCount = 0, executiveCount = 0;
     Object.values(i.items).forEach(v => {
       const mgrEv = getManagerEvidence(v);
@@ -1380,6 +1582,7 @@ function saveData() {
     if (DATA.settings?.autoCompact !== false) {
       compactExpiredInspectionPhotos();
     }
+    try { syncTrack(); } catch (e) { console.warn('syncTrack', e); }
     const json = JSON.stringify(DATA);
     localStorage.setItem(STORAGE_KEY, json);
     _saveQuotaWarned = false;
@@ -1407,6 +1610,7 @@ function saveData() {
       } catch(e2) {
         toast('❌ บันทึกไม่ได้ — ใช้ Admin > Data > Clear เก่าออก · Cannot save: clear old data', 'warn');
       }
+      scheduleCloudSync();
     }
   }
 }
@@ -2637,45 +2841,46 @@ async function attachPhoto(ev, itemId) {
   if (!item.photos) item.photos = [];
   if (!item.photoEvidence) item.photoEvidence = [];
 
-  // Show the selected photo immediately so the user can see that the input
-  // actually received the file. It is replaced by the Cloud URL after upload.
-  const localPreviews = [];
+  // ย่อรูปครั้งเดียว แล้วโชว์ทันที (เดิมย่อ 2 รอบ ทำให้มือถือรุ่นเก่าช้า/ค้าง)
+  const prepared = [];
   for (const file of files) {
     try {
-      const preview = await new Promise((resolve, reject) => {
-        compressImage(file, resolve);
-        setTimeout(() => reject(new Error('รูปใช้เวลานานเกินไป')), 30000);
+      const dataUrl = await new Promise((resolve, reject) => {
+        compressImage(file, resolve, reject);
+        setTimeout(() => reject(new Error('อ่านไฟล์รูปไม่สำเร็จ หรือไฟล์ใหญ่เกินไป')), 30000);
       });
-      localPreviews.push(preview);
-    } catch (_) {}
+      prepared.push(dataUrl);
+    } catch (e) {
+      console.error('compressImage failed', e);
+      toast(`เปิดไฟล์รูปไม่ได้ · ${e?.message || e}`, 'warn');
+    }
   }
-  if (localPreviews.length) {
+  ev.target.value = '';
+  if (!prepared.length) return;
+  {
     const previewBox = document.querySelector(`[data-photo-preview="${itemId}"]`);
     if (previewBox) {
       previewBox.style.display = 'block';
       const row = previewBox.querySelector('.flex.gap-2.flex-wrap');
-      if (row) row.innerHTML = localPreviews.map(p => `<img src="${p}" alt="กำลังอัปโหลด" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:2px solid #d6a53a">`).join('');
+      if (row) row.insertAdjacentHTML('beforeend', prepared.map(p => `<img src="${p}" alt="กำลังอัปโหลด" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:2px solid #d6a53a;opacity:.75">`).join(''));
       const count = previewBox.querySelector('.text-xs');
-      if (count) count.textContent = `กำลังอัปโหลด ${localPreviews.length} รูป…`;
+      if (count) count.textContent = `กำลังอัปโหลด ${prepared.length} รูป…`;
     }
   }
-
+  const inspId = VIEW_STATE.inspection.id;
   let done = 0;
   let queued = 0;
-  for (const file of files) {
-    let dataUrl = null;
+  for (const dataUrl of prepared) {
     try {
-      dataUrl = await new Promise((resolve, reject) => {
-        compressImage(file, resolve, reject);
-        setTimeout(() => reject(new Error('อ่านไฟล์รูปไม่สำเร็จ หรือไฟล์ใหญ่เกินไป')), 30000);
-      });
-    } catch (e) {
-      console.error('compressImage failed', e);
-      toast(`เปิดไฟล์รูปไม่ได้ · ${e?.message || e}`, 'warn');
-      continue;
-    }
-    try {
-      const asset = await uploadPhotoToCloud(dataUrl, VIEW_STATE.inspection.id, itemId, 'manager');
+      if (!navigator.onLine) throw new Error('offline');
+      const asset = await uploadPhotoToCloud(dataUrl, inspId, itemId, 'manager');
+      // ข้อมูลอาจถูกรวมจากเครื่องอื่นระหว่างอัปโหลด → หา object ล่าสุดก่อนใส่รูป
+      const liveInsp = (VIEW_STATE.inspection && VIEW_STATE.inspection.id === inspId) ? VIEW_STATE.inspection : (DATA.inspections || []).find(x => x.id === inspId);
+      if (!liveInsp) continue;
+      if (!liveInsp.items) liveInsp.items = {};
+      const item = liveInsp.items[itemId] || (liveInsp.items[itemId] = {});
+      if (!Array.isArray(item.photos)) item.photos = [];
+      if (!Array.isArray(item.photoEvidence)) item.photoEvidence = [];
       item.photos.push(asset.url);
       item.photoEvidence.push({
         url: asset.url, path: asset.path, storageMode: asset.storageMode || 'public',
@@ -2687,7 +2892,7 @@ async function attachPhoto(ev, itemId) {
       // อัปโหลดไม่ผ่าน = เก็บเข้าคิวไว้ในเครื่อง ไม่ทิ้งรูป ไม่ต้องถ่ายใหม่
       console.warn('อัปโหลดไม่สำเร็จ เก็บเข้าคิวรอส่ง:', e?.message || e);
       enqueuePhoto({
-        qid: uid(), inspectionId: VIEW_STATE.inspection.id, itemId, stage: 'manager',
+        qid: uid(), inspectionId: inspId, itemId, stage: 'manager',
         dataUrl, ts: Date.now(), userId: SESSION.user.id, userName: SESSION.user.name
       });
       queued++;
@@ -2696,12 +2901,12 @@ async function attachPhoto(ev, itemId) {
   autoSave();
   render();
   if (done && !queued) {
-    const signedCount = item.photoEvidence.filter(x => x.storageMode === 'signed').length;
+    const liveItem = (VIEW_STATE.inspection && VIEW_STATE.inspection.items && VIEW_STATE.inspection.items[itemId]) || { photoEvidence: [] };
+    const signedCount = (liveItem.photoEvidence || []).filter(x => x.storageMode === 'signed').length;
     toast(`แนบหลักฐาน Manager แล้ว ${done} รูป${signedCount ? ' · Cloud ใช้ Signed URL ชั่วคราว — ควรเปิด Public bucket' : ''}`, signedCount ? 'warn' : 'success');
   } else if (queued) {
     toast(`📎 เก็บรูปไว้ในเครื่องแล้ว ${queued} รูป · จะส่งขึ้น Cloud อัตโนมัติเมื่อเน็ตกลับมา${done ? ` (ส่งสำเร็จแล้ว ${done})` : ''}`, 'warn');
   }
-  ev.target.value = '';
 }
 async function attachExecPhoto(ev, itemId) {
   const files = Array.from(ev.target.files || []);
@@ -2730,7 +2935,13 @@ async function attachExecPhoto(ev, itemId) {
         continue;
       }
       try {
-        const asset = await uploadPhotoToCloud(dataUrl, VIEW_STATE.historyId, itemId, 'executive');
+        const asset = await uploadPhotoToCloud(dataUrl, insp.id, itemId, 'executive');
+        const liveInsp = (DATA.inspections || []).find(x => x.id === insp.id) || insp;
+        if (!liveInsp.execReview) liveInsp.execReview = { items: {} };
+        if (!liveInsp.execReview.items) liveInsp.execReview.items = {};
+        const er = liveInsp.execReview.items[itemId] || (liveInsp.execReview.items[itemId] = {});
+        if (!Array.isArray(er.execPhotos)) er.execPhotos = getExecPhotos(er);
+        if (!Array.isArray(er.execEvidence)) er.execEvidence = [];
         er.execPhotos.push(asset.url);
         er.execEvidence.push({
           url: asset.url, path: asset.path, storageMode: asset.storageMode || 'public',
@@ -2742,7 +2953,7 @@ async function attachExecPhoto(ev, itemId) {
       } catch (e) {
         console.warn('อัปโหลดรูปตรวจซ้ำไม่สำเร็จ เก็บเข้าคิว:', e?.message || e);
         enqueuePhoto({
-          qid: uid(), inspectionId: VIEW_STATE.historyId, itemId, stage: 'executive',
+          qid: uid(), inspectionId: insp.id, itemId, stage: 'executive',
           dataUrl, ts: Date.now(), userId: SESSION.user.id, userName: SESSION.user.name
         });
         queued++;
@@ -3849,8 +4060,12 @@ function renderExecReview() {
               <div class="flex gap-2 mb-2 flex-wrap">
                 <input type="text" data-field="exec-note" data-item-id="${it.id}" placeholder="หมายเหตุการตรวจซ้ำ..." value="${(er.execNote||'').replace(/"/g,'&quot;')}" class="flex-1" style="min-width:0;background:white">
                 <label class="btn-secondary cursor-pointer whitespace-nowrap flex items-center gap-1" style="padding:10px 14px">
-                  📷 แนบเพิ่ม
-                  <input type="file" accept="image/*" multiple capture="environment" data-exec-photo data-item-id="${it.id}" style="display:none">
+                  🖼️ คลัง
+                  <input type="file" accept="image/*" multiple data-exec-photo data-item-id="${it.id}" style="display:none">
+                </label>
+                <label class="btn-secondary cursor-pointer whitespace-nowrap flex items-center gap-1" style="padding:10px 14px">
+                  📷 กล้อง
+                  <input type="file" accept="image/*" capture="environment" data-exec-photo data-item-id="${it.id}" style="display:none">
                 </label>
               </div>
               ${getExecPhotos(er).length ? `<div class="flex gap-2 flex-wrap">${getExecPhotos(er).map((p,pi)=>`<div class="relative inline-block"><img src="${p}" style="height:92px;width:92px;object-fit:cover;border-radius:10px;border:1px solid #d0b8db;display:block"><button data-action="removeExecPhoto" data-item-id="${it.id}" data-photo-idx="${pi}" style="position:absolute;top:-8px;right:-8px;width:26px;height:26px;background:#dc2626;color:white;border:0;border-radius:50%;cursor:pointer;font-size:12px">✕</button></div>`).join('')}</div>` : ''}
@@ -5751,7 +5966,7 @@ function getGlobalStats() {
 window.addEventListener('online', () => {
   setConn('connecting');
   if (!FNB_CLOUD_READY) initCloud();
-  else { cloudSyncNow(false); flushPhotoQueue(); setConn('online'); }
+  else { (async () => { await cloudSyncNow(false); await refreshCloudFromServer('online'); flushPhotoQueue(); })(); setConn('online'); }
 });
 window.addEventListener('offline', () => setConn('offline', 'อุปกรณ์ออฟไลน์'));
 // กลับมาเปิดหน้าจออีกครั้ง: ดึงข้อมูลล่าสุดและส่งของค้าง
@@ -5761,21 +5976,26 @@ document.addEventListener('visibilitychange', () => {
   if (!FNB_CLOUD_READY) initCloud();
   else {
     // Pull first, then sync pending local edits. This prevents an old tab from showing stale History.
-    refreshCloudFromServer('visibility');
-    cloudSyncNow(false);
-    flushPhotoQueue();
+    (async () => {
+      await cloudSyncNow(false);
+      await refreshCloudFromServer('visibility');
+      flushPhotoQueue();
+    })();
   }
 });
+window.addEventListener('pageshow', ev => { if (ev.persisted && navigator.onLine && FNB_CLOUD_READY) { cloudSyncNow(false).then(() => refreshCloudFromServer('pageshow')); flushPhotoQueue(); } });
 // ส่งรูปที่ค้างเป็นระยะ เผื่อเน็ตกลับมาแบบเงียบๆ
 setInterval(() => {
   if (!navigator.onLine || !FNB_CLOUD_READY) return;
   flushPhotoQueue();
-  refreshCloudFromServer('periodic');
+  if (SYNC_DIRTY.size || SYNC_DEL.size) cloudSyncNow(false);
+  else refreshCloudFromServer('periodic');
 }, 15000);
 
 // INIT
 function bootApp() {
-  FNB_CONN.pendingPhotos = readPhotoQueue().length;
+  try { syncSnapReset(); syncPersist(); } catch (e) { console.warn('sync init', e); }
+  pqInit().then(() => { FNB_CONN.pendingPhotos = readPhotoQueue().length; paintConnChip(); if (VIEW_STATE.page === 'inspection') softRender(); });
   render();
   if (!navigator.onLine) setConn('offline', 'อุปกรณ์ออฟไลน์');
   initCloud();
