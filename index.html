@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
-<meta name="app-build" content="2026-10-30-data-reset">
+<meta name="app-build" content="2026-10-30-easy-line">
 <meta name="theme-color" content="#b8892f">
 <meta name="format-detection" content="telephone=no">
 <meta name="mobile-web-app-capable" content="yes">
@@ -3592,13 +3592,11 @@ function showLineModal(text, title, photos) {
     <div class="mb-4 text-center">
       <div class="text-3xl mb-2">💬</div>
       <div class="text-lg font-bold" style="color:#1a1611">${title||'ข้อความสำหรับ LINE'}</div>
-      <div class="text-xs" style="color:#5c5138">Copy ข้อความ → เปิด LINE → แนบรูปเพิ่ม (ถ้ามี)</div>
     </div>
-    <textarea id="line-text-area" readonly rows="12" style="font-family:'Prompt',sans-serif;font-size:12px;line-height:1.6;background:#faf5e8;white-space:pre-wrap">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
-    <div class="flex gap-2 mt-3">
-      <button data-action="copyLine" class="btn-primary flex-1" style="padding:14px">📋 Copy ข้อความ</button>
-      <button data-action="openLineApp" class="flex-1" style="background:#06C755;color:white;border:0;padding:14px;border-radius:14px;font-weight:600;cursor:pointer;font-size:14px">💬 เปิด LINE</button>
-    </div>
+    <button data-action="openLineApp" style="width:100%;background:#06C755;color:white;border:0;padding:18px;border-radius:16px;font-weight:800;cursor:pointer;font-size:22px;margin-bottom:14px">💬 ส่งเข้า LINE</button>
+    <div class="text-sm mb-2" style="color:#5c5138">ตัวอย่างข้อความที่จะส่ง</div>
+    <textarea id="line-text-area" readonly rows="8" style="font-family:'Prompt',sans-serif;font-size:12px;line-height:1.6;background:#faf5e8;white-space:pre-wrap">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    <button data-action="copyLine" class="btn-secondary w-full mt-3" style="padding:12px">📋 คัดลอกข้อความอย่างเดียว</button>
     ${photoHtml}
     <button data-action="closeModal" class="btn-secondary w-full mt-3">ปิด</button>
   </div>`);
@@ -3657,9 +3655,7 @@ function openLineApp() {
   if (!ta) return;
   const text = ta.value;
   // LINE share URL (short version works on mobile app)
-  const url = `https://line.me/R/msg/text/?${encodeURIComponent(text)}`;
-  window.open(url, '_blank');
-  toast('เปิด LINE... ถ้าไม่เปิดกรุณา Copy ข้อความแทน', 'info');
+  window.fnbSendToLine(text);
 }
 
 // HISTORY
@@ -6074,5 +6070,35 @@ if (document.readyState === 'loading') document.addEventListener('DOMContentLoad
 else bootApp();
 </script>
 
+<!-- EASY-LINE: one-tap "ส่งเข้า LINE" for every report button (large, senior-friendly) -->
+<script id="fnb-easy-line">
+(function(){
+ const isMobile=()=>/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.maxTouchPoints>1&&/Macintosh/.test(navigator.userAgent));
+ function copy(text){
+  try{if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).catch(()=>legacy(text));return true}}catch(e){}
+  return legacy(text);
+ }
+ function legacy(text){try{const t=document.createElement('textarea');t.value=text;t.setAttribute('readonly','');t.style.cssText='position:fixed;top:-1000px;opacity:0';document.body.appendChild(t);t.select();t.setSelectionRange(0,t.value.length);const ok=document.execCommand('copy');t.remove();return ok}catch(e){return false}}
+ function closeBox(){const b=document.getElementById('fnbEasyLine');if(b)b.remove()}
+ function box(html){closeBox();const d=document.createElement('div');d.id='fnbEasyLine';d.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(15,25,40,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+  d.innerHTML=`<div style="background:#fff;border-radius:22px;max-width:460px;width:100%;padding:26px 22px;font-family:inherit;color:#13283f;box-shadow:0 20px 60px rgba(0,0,0,.3)">${html}<button type="button" data-easyline-close style="margin-top:18px;width:100%;padding:16px;border:0;border-radius:14px;background:#e9eef4;color:#13283f;font:700 20px/1.2 inherit;cursor:pointer">ปิด</button></div>`;
+  d.addEventListener('click',e=>{if(e.target===d||e.target.closest('[data-easyline-close]'))closeBox()});document.body.appendChild(d)}
+ window.fnbSendToLine=function(text){
+  text=String(text||'').trim();if(!text)return false;
+  const copied=copy(text);
+  if(isMobile()){
+   const url='https://line.me/R/share?text='+encodeURIComponent(text);
+   const w=window.open(url,'_blank');if(!w)location.href=url;
+   return true;
+  }
+  box(`<div style="text-align:center;font-size:54px;line-height:1">${copied?'✅':'📋'}</div>
+   <div style="text-align:center;font-size:24px;font-weight:800;margin:10px 0 16px">${copied?'คัดลอกรายงานแล้ว':'คัดลอกไม่ได้ — กรุณาคัดลอกเอง'}</div>
+   <div style="font-size:20px;line-height:1.9">① เปิดโปรแกรม <b style="color:#06C755">LINE</b><br>② เลือกกลุ่มที่จะส่ง<br>③ กด <b>Ctrl + V</b> แล้วกด <b>Enter</b></div>
+   ${copied?'':`<textarea readonly style="margin-top:12px;width:100%;height:140px;font-size:15px">${text.replace(/</g,'&lt;')}</textarea>`}
+   <a href="line://" style="display:block;margin-top:18px;text-align:center;padding:16px;border-radius:14px;background:#06C755;color:#fff;font:800 20px/1.2 inherit;text-decoration:none">💬 เปิดโปรแกรม LINE</a>`);
+  return true;
+ };
+})();
+</script>
 </body>
 </html>
