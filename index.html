@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>F&B Standards</title>
-<meta name="app-build" content="2026-10-29-multidevice-sync-v2">
+<meta name="app-build" content="2026-10-30-data-reset">
 <meta name="theme-color" content="#b8892f">
 <meta name="format-detection" content="telephone=no">
 <meta name="mobile-web-app-capable" content="yes">
@@ -685,12 +685,36 @@ async function cloudFetchAllRows() {
 let FNB_FRESH_DB = false;
 
 // โหลด + รวมข้อมูล เท่านั้น ยังไม่เขียนขึ้น cloud
+function fnbCreatedAt(x) { return Number((x && (x.createdAt || x.startedAt || x.updatedAt || x.completedAt)) || 0) || 0; }
+function fnbApplyDataReset(resetAt) {
+  let changed = false;
+  for (const b of SYNC_BUCKETS) {
+    const before = (DATA[b] || []).length;
+    DATA[b] = (DATA[b] || []).filter(x => {
+      if (x && fnbCreatedAt(x) >= resetAt) return true;
+      if (x && x.id) { SYNC_DIRTY.delete(b + '|' + x.id); SYNC_DEL.delete(b + '|' + x.id); }
+      return false;
+    });
+    if (DATA[b].length !== before) changed = true;
+  }
+  if (changed) { try { syncSnapReset(); } catch (_) {} syncPersist(); }
+  return changed;
+}
 async function cloudLoadStateRaw() {
   if (!FNB_SB) return;
   const list = await cloudFetchAllRows();
   const cfgRows = list.filter(r => r.bucket === 'config');
   const cloudIns = list.filter(r => r.bucket === 'inspections' && !r.payload?.testRun && !String(r.item_id||'').startsWith('LOADTEST_'));
   const cloudComp = list.filter(r => r.bucket === 'complaints');
+  // DATA-RESET: an admin wiped all inspections + complaints. Drop every local copy made
+  // before that moment (on every device) and delete stray older rows that reappear.
+  const resetAt = Number(cfgRows.find(r => r.item_id === 'data_reset')?.payload?.at || 0);
+  if (resetAt) {
+    fnbApplyDataReset(resetAt);
+    for (const [b, arr] of [['inspections', cloudIns], ['complaints', cloudComp]]) {
+      for (let i = arr.length - 1; i >= 0; i--) if (fnbCreatedAt(arr[i].payload) < resetAt) { SYNC_DEL.add(b + '|' + arr[i].item_id); arr.splice(i, 1); }
+    }
+  }
 
   FNB_FRESH_DB = (cfgRows.length === 0 && cloudIns.length === 0 && cloudComp.length === 0);
   if (FNB_FRESH_DB) {
@@ -1067,6 +1091,7 @@ function applyCloudRealtime(payload) {
   if (!row) return;
   if (row.bucket === 'config') {
     if (payload.eventType === 'DELETE') return;
+    if (row.item_id === 'data_reset') { const at = Number(row.payload?.at || 0); if (at && fnbApplyDataReset(at)) { saveDataLocalOnly(); requestRealtimeRender(); } setTimeout(() => refreshCloudFromServer('data-reset'), 50); return; }
     if (CONFIG_SECTIONS.includes(row.item_id)) {
       const v = row.payload && row.payload.v !== undefined ? row.payload.v : row.payload;
       const prevC = FNB_CLOUD_CACHE.config && FNB_CLOUD_CACHE.config[row.item_id];
@@ -5846,7 +5871,7 @@ function renderAdminData() {
       <button data-action="compactNow" class="btn-secondary py-4" style="border-color:#8b6820;color:#8b6820">🗜️ Compact ทันที · ลบรูปเก่า</button>
       <button data-action="clearOldInspections" class="btn-secondary py-4" style="border-color:#dc2626;color:#dc2626">🧹 ลบข้อมูลเก่ากว่า 90 วัน</button>
       <button data-action="cleanupLoadTests" class="btn-secondary py-4" style="border-color:#d97706;color:#92400e">🧪 ลบประวัติ LOADTEST</button>
-      <button data-action="clearInspections" class="btn-danger py-4">🗑️ ลบประวัติการตรวจทั้งหมด</button>
+      <button data-action="clearInspections" class="btn-danger py-4">🗑️ ลบใบตรวจ + ข้อร้องเรียนทั้งหมด (ทุกเครื่อง)</button>
       <button data-action="resetAll" class="btn-danger py-4">⚠️ รีเซ็ตระบบทั้งหมด</button>
     </div>
 
@@ -5949,7 +5974,47 @@ async function cleanupLoadTests() {
   render();
 }
 
-function clearInspections() { if (!confirm('ลบประวัติทั้งหมด?')) return; DATA.inspections = []; saveData(); render(); toast('ลบแล้ว'); }
+async function clearInspections() {
+  if (!isAdmin()) { toast('เฉพาะ Admin เท่านั้น', 'error'); return; }
+  const n1 = (DATA.inspections || []).length, n2 = (DATA.complaints || []).length;
+  const typed = prompt(`⚠️ ลบใบตรวจ ${n1} ใบ และข้อร้องเรียน ${n2} รายการ\nทุกโรงแรม ทุกเครื่อง รวมรูปถ่าย — กู้คืนไม่ได้\n(ผู้ใช้ เช็กลิสต์ และการตั้งค่า ยังอยู่)\n\nพิมพ์คำว่า  ลบทั้งหมด  เพื่อยืนยัน`);
+  if ((typed || '').trim() !== 'ลบทั้งหมด') { toast('ยกเลิกแล้ว · ไม่มีอะไรถูกลบ'); return; }
+  if (!FNB_CLOUD_READY || !FNB_SB || !navigator.onLine) { toast('ต้องออนไลน์และเชื่อม Cloud ก่อนจึงจะลบได้', 'error'); return; }
+  const at = Date.now();
+  toast('กำลังลบ…', 'info');
+  try {
+    const rowsAll = (await cloudFetchAllRows()).filter(r => r.bucket === 'inspections' || r.bucket === 'complaints');
+    const paths = [];
+    const walk = o => { if (!o || typeof o !== 'object') return; if (Array.isArray(o)) { o.forEach(walk); return; } for (const [k, v] of Object.entries(o)) { if (k === 'path' && typeof v === 'string') paths.push(v); else walk(v); } };
+    rowsAll.forEach(r => walk(r.payload)); (DATA.inspections || []).forEach(walk); (DATA.complaints || []).forEach(walk);
+    // marker first: every device drops its local copies even if a delete below is interrupted
+    { const { error } = await FNB_SB.from(FNB_CLOUD.table).upsert([{ bucket: 'config', item_id: 'data_reset', payload: { at, by: SESSION.user?.username || SESSION.user?.name || '', counts: { inspections: rowsAll.filter(r => r.bucket === 'inspections').length, complaints: rowsAll.filter(r => r.bucket === 'complaints').length } } }], { onConflict: 'bucket,item_id' }); if (error) throw error; }
+    for (const b of ['inspections', 'complaints']) {
+      const ids = rowsAll.filter(r => r.bucket === b).map(r => r.item_id);
+      for (let i = 0; i < ids.length; i += 100) {
+        const { error } = await FNB_SB.from(FNB_CLOUD.table).delete().eq('bucket', b).in('item_id', ids.slice(i, i + 100));
+        if (error) throw error;
+      }
+    }
+    DATA.inspections = []; DATA.complaints = [];
+    for (const k of [...SYNC_DIRTY]) if (SYNC_BUCKETS.some(b => k.startsWith(b + '|'))) SYNC_DIRTY.delete(k);
+    for (const k of [...SYNC_DEL]) if (SYNC_BUCKETS.some(b => k.startsWith(b + '|'))) SYNC_DEL.delete(k);
+    SYNC_SEEN = [];
+    FNB_CLOUD_CACHE.inspections = new Map(); FNB_CLOUD_CACHE.complaints = new Map();
+    try { syncSnapReset(); } catch (_) {}
+    syncPersist();
+    try { writePhotoQueue([]); } catch (_) {}
+    saveDataLocalOnly();
+    if (paths.length) queuePhotoDeletion(paths);
+    const left = (await cloudFetchAllRows()).filter(r => r.bucket === 'inspections' || r.bucket === 'complaints').length;
+    render();
+    if (left) toast(`ลบแล้วบางส่วน · ยังเหลือใน Cloud ${left} รายการ — กดลบอีกครั้ง`, 'warn');
+    else toast(`🗑️ ลบใบตรวจ ${n1} ใบ และข้อร้องเรียน ${n2} รายการเรียบร้อย · ทุกเครื่องจะว่างตาม`, 'success');
+  } catch (e) {
+    console.error('wipe failed', e);
+    toast(`ลบไม่สำเร็จ · ${e?.message || e}`, 'error');
+  }
+}
 function resetAll() {
   if (!confirm('รีเซ็ตระบบ?')) return;
   if (!confirm('แน่ใจอีกครั้ง?')) return;
